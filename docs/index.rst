@@ -89,7 +89,6 @@ Support
 
 - :doc:`advanced/troubleshooting` — Common issues and solutions
 - :doc:`advanced/faq` — Frequently asked questions
-- :doc:`advanced/i18n` — Translating the docs
 - `GitHub Issues <https://github.com/cafferychen777/ChatSpatial/issues>`_ — Report bugs
 
 ----
@@ -118,4 +117,3 @@ Support
 
    advanced/troubleshooting
    advanced/faq
-   advanced/i18n
