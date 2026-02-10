@@ -15,15 +15,33 @@ conda activate chatspatial
 
 ## Step 2: Install
 
+**Recommended: Use `uv` for fast, reliable installation**
+
+```bash
+# Install uv (if not already installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install ChatSpatial
+uv pip install chatspatial[full]
+```
+
+> **Why uv?** ChatSpatial has complex bioinformatics dependencies (squidpy, scanpy, scvi-tools, spatialdata). Standard `pip` may fail with `resolution-too-deep` errors. `uv` has a more powerful resolver that handles this seamlessly.
+
+<details>
+<summary>Alternative: pip (may fail on complex dependency trees)</summary>
+
 ```bash
 pip install --upgrade pip
 pip install chatspatial[full]
 ```
 
-| Option | Command | Features | Time |
-|--------|---------|----------|------|
-| **Full** | `pip install chatspatial[full]` | All 60+ methods | ~13 min |
-| Standard | `pip install chatspatial` | Core methods | ~6 min |
+If you see `resolution-too-deep` error, switch to `uv`.
+</details>
+
+| Option | Command | Features |
+|--------|---------|----------|
+| **Full** | `uv pip install chatspatial[full]` | All 60+ methods |
+| Standard | `uv pip install chatspatial` | Core methods |
 
 ## Step 3: Configure MCP Client
 

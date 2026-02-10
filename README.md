@@ -56,8 +56,12 @@ Generated visualization
 ## Quick Start
 
 ```bash
-# Install
-pip install chatspatial
+# Install uv (recommended - handles complex dependencies)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Create environment and install
+python3 -m venv venv && source venv/bin/activate
+uv pip install chatspatial
 
 # Configure (use your venv Python path)
 claude mcp add chatspatial /path/to/venv/bin/python -- -m chatspatial server

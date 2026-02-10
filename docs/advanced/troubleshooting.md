@@ -89,7 +89,8 @@ For human: species="human", liana_resource="consensus"
 
 | Problem | Solution |
 |---------|----------|
-| Import errors | `pip install --upgrade chatspatial[full]` |
+| Import errors | `uv pip install --upgrade chatspatial[full]` |
+| `resolution-too-deep` | Use `uv` instead of `pip` |
 | Claude not connecting | Restart Claude, check JSON config |
 | Path errors | Use absolute paths |
 | Analysis fails | Run preprocessing first |
