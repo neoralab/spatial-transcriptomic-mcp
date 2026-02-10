@@ -55,6 +55,14 @@ Generated visualization
 
 ## Quick Start
 
+**Using Claude Code / Codex / OpenCode?** Just paste this:
+```
+Install ChatSpatial following https://github.com/cafferychen777/ChatSpatial/blob/main/INSTALLATION.md
+```
+
+<details>
+<summary>Manual installation</summary>
+
 ```bash
 # Install uv (recommended - handles complex dependencies)
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -66,6 +74,7 @@ uv pip install chatspatial
 # Configure (use your venv Python path)
 claude mcp add chatspatial /path/to/venv/bin/python -- -m chatspatial server
 ```
+</details>
 
 > **Works with any MCP-compatible client** — not just Claude. Use with [OpenCode](https://opencode.ai/), Codex, or any client supporting [Model Context Protocol](https://modelcontextprotocol.io/). Configure your preferred LLM (Qwen, DeepSeek, Doubao, etc.) as the backend.
 
