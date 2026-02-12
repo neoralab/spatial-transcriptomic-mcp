@@ -9,6 +9,7 @@ Design Principles:
 2. Pure Functions: No side effects, callers decide how to handle results
 3. String Returns: Callers convert to torch.device if needed
 4. Composable: Basic building blocks for various use cases
+5. Single Source of Truth: All GPU/MPS configuration in one place
 
 Usage:
     # Simple device selection
@@ -24,10 +25,45 @@ Usage:
     device = torch.device(get_device(use_gpu=True, allow_mps=True))
 """
 
+import os
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ..spatial_mcp_adapter import ToolContext
+
+
+# =============================================================================
+# MPS Configuration (Apple Silicon)
+# =============================================================================
+
+# Track if MPS has been configured (idempotent)
+_mps_configured = False
+
+
+def _configure_mps() -> None:
+    """Configure MPS backend for optimal performance.
+
+    This function configures PyTorch MPS settings for Apple Silicon Macs.
+    It is called automatically when MPS is selected via get_device().
+
+    Key configuration:
+    - PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0: Disables memory limit enforcement.
+      Mac's Unified Memory allows GPU/CPU to share system RAM dynamically.
+      The default limit (often ~36GB) is too conservative for large models
+      like STAGATE/GraphST that need flexible memory allocation.
+
+    This is idempotent - safe to call multiple times.
+    """
+    global _mps_configured
+    if _mps_configured:
+        return
+
+    # Disable MPS memory limit - Mac Unified Memory handles this dynamically
+    # Without this, large models fail with "MPS backend out of memory"
+    # even when system has available RAM
+    os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
+
+    _mps_configured = True
 
 
 # =============================================================================
@@ -108,6 +144,8 @@ def get_device(
         if cuda_available():
             return "cuda:0"
         if allow_mps and mps_available():
+            # Configure MPS before first use (idempotent)
+            _configure_mps()
             return "mps"
     return "cpu"
 

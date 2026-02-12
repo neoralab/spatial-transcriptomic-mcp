@@ -1316,6 +1316,7 @@ class SpatialDomainParameters(BaseModel):
     )
 
     # STAGATE specific parameters
+    stagate_use_gpu: bool = True  # Whether to use GPU/MPS acceleration
     stagate_rad_cutoff: Optional[float] = (
         None  # Radius cutoff for spatial neighbors (default: 150)
     )
