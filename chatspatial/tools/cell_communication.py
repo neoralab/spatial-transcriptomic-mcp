@@ -898,7 +898,7 @@ async def _analyze_communication_cellphonedb(
         # A pair is significant if its minimum p-value < threshold (after correction)
         # Convert to numeric to handle any non-numeric values
         pval_array = pvalues.select_dtypes(include=[np.number]).values
-        if pval_array.shape[0] == 0:
+        if pval_array.shape[0] == 0 or pval_array.shape[1] == 0:
             raise ProcessingError("CellPhoneDB p-values are not numeric.")
 
         # Apply multiple testing correction if requested
