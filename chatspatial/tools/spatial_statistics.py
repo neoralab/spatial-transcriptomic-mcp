@@ -1128,6 +1128,8 @@ def _analyze_join_count(
             "p_value": float(jc.p_sim) if hasattr(jc, "p_sim") else None,
         }
 
+    except ParameterError:
+        raise
     except Exception as e:
         raise ProcessingError(f"Join Count analysis failed: {e}") from e
 

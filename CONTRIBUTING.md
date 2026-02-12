@@ -183,26 +183,17 @@ Follow conventional commits:
 
 ### Test Structure
 
-ChatSpatial uses a comprehensive testing strategy:
+ChatSpatial uses a layered testing strategy:
 
 ```
 tests/
-├── unit/                        # Unit tests for individual components
-│   ├── algorithms/             # Algorithm-specific tests
-│   ├── models/                 # Pydantic model tests
-│   └── utils/                  # Utility function tests
-├── integration/                # Integration tests for workflows
-│   ├── test_enrichment_analysis.py
-│   └── test_trajectory_analysis.py
-├── e2e/                        # End-to-end MCP integration tests
-│   └── test_mcp_integration.py
-├── stress_tests/               # Performance and reliability tests
-│   └── test_comprehensive_stress.py
-├── visualization_tests/        # Image generation and display tests
-│   └── test_visualization_comprehensive.py
-└── fixtures/                   # Shared test fixtures
-    └── __init__.py
+├── unit/                        # Pure function tests
+├── integration/                # Multi-component tests
+├── e2e/                        # Workflow tests via public tool APIs
+└── fixtures/                   # Shared fixtures/helpers
 ```
+
+Legacy exploratory scripts previously under `scripts/tests/` are deprecated and not part of the CI test contract.
 
 ### Test Categories and When to Use
 
@@ -220,7 +211,7 @@ tests/
        # Test load → preprocess → analyze → visualize
    ```
 
-3. **E2E Tests**: Full MCP protocol testing
+3. **E2E Tests**: Public API workflow testing
    ```python
    # Test MCP tool calls end-to-end
    async def test_mcp_spatial_analysis_complete():
@@ -237,9 +228,32 @@ tests/
 5. **Visualization Tests**: Image generation testing
    ```python
    # Test image creation and format
-   async def test_spatial_plot_generation():
-       # Test matplotlib → MCP Image object conversion
-   ```
+    async def test_spatial_plot_generation():
+        # Test matplotlib → MCP Image object conversion
+    ```
+
+### Quality Gates
+
+Run the local quality gate script before opening a PR:
+
+```bash
+scripts/quality/check_test_gates.sh
+```
+
+This enforces:
+- pytest collection count > 0
+- fast default suite passes (`not slow`)
+- at least one core e2e workflow passes
+- e2e failure artifacts written to `tests/artifacts/e2e_failures/` with `data_id` and parameter snapshots
+
+Convenience targets:
+
+```bash
+make test-fast   # default fast suite (not slow)
+make test-slow   # optional heavy dependency suite
+make test-e2e    # core e2e workflows only
+make test-gates  # full local quality gate
+```
 
 ### Critical Testing Requirements
 

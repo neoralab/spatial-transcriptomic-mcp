@@ -612,7 +612,7 @@ class VisualizationParameters(BaseModel):
 
         # Communication - set default subtype if not provided
         if self.plot_type == "communication" and not self.subtype:
-            self.subtype = "heatmap"
+            self.subtype = "dotplot"
 
         # Trajectory - set default subtype if not provided
         if self.plot_type == "trajectory" and not self.subtype:

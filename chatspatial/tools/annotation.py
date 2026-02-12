@@ -1362,6 +1362,8 @@ async def annotate_cell_types(
                 adata, params, ctx, output_key, confidence_key
             )
 
+    except (ParameterError, DataError, DataNotFoundError):
+        raise
     except Exception as e:
         raise ProcessingError(f"Annotation failed: {e}") from e
 

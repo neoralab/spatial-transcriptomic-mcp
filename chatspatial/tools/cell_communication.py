@@ -287,6 +287,8 @@ async def analyze_cell_communication(
             statistics=storage.statistics,
         )
 
+    except (ParameterError, DataNotFoundError, DataCompatibilityError):
+        raise
     except Exception as e:
         raise ProcessingError(f"Error in cell communication analysis: {e}") from e
 

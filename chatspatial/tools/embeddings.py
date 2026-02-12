@@ -245,8 +245,13 @@ async def compute_embeddings(
                 n_clusters = adata.obs[params.clustering_key].nunique()
                 computed.append(f"Leiden clustering ({n_clusters} clusters)")
             else:
-                skipped.append(f"{params.clustering_key} (already exists)")
-                n_clusters = adata.obs[params.clustering_key].nunique()
+                if params.clustering_key in adata.obs:
+                    skipped.append(f"{params.clustering_key} (already exists)")
+                    n_clusters = adata.obs[params.clustering_key].nunique()
+                else:
+                    skipped.append(
+                        f"{params.clustering_key} (missing; clustering not computed)"
+                    )
         else:
             if ensure_louvain(
                 adata,
@@ -257,8 +262,13 @@ async def compute_embeddings(
                 n_clusters = adata.obs[params.clustering_key].nunique()
                 computed.append(f"Louvain clustering ({n_clusters} clusters)")
             else:
-                skipped.append(f"{params.clustering_key} (already exists)")
-                n_clusters = adata.obs[params.clustering_key].nunique()
+                if params.clustering_key in adata.obs:
+                    skipped.append(f"{params.clustering_key} (already exists)")
+                    n_clusters = adata.obs[params.clustering_key].nunique()
+                else:
+                    skipped.append(
+                        f"{params.clustering_key} (missing; clustering not computed)"
+                    )
 
     # 5. Diffusion map (requires neighbors)
     if params.compute_diffmap:

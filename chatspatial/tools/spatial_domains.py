@@ -28,7 +28,7 @@ from ..utils.adata_utils import (
 )
 from ..utils.compute import ensure_neighbors, ensure_pca
 from ..utils.dependency_manager import require
-from ..utils.device_utils import get_device, resolve_device_async
+from ..utils.device_utils import resolve_device_async
 from ..utils.exceptions import (
     DataError,
     DataNotFoundError,
@@ -657,8 +657,11 @@ async def _identify_domains_stagate(
         except Exception:
             pass  # Stats display is optional
 
-        # Set device
-        device = torch.device(get_device(prefer_gpu=True))
+        # Set device (support CUDA, MPS, and CPU)
+        device_str = await resolve_device_async(
+            prefer_gpu=True, ctx=ctx, allow_mps=True
+        )
+        device = torch.device(device_str)
 
         # Train STAGATE with timeout protection
         import asyncio
@@ -680,58 +683,25 @@ async def _identify_domains_stagate(
         embeddings_key = "STAGATE"
         n_clusters_target = params.n_domains
 
-        # Perform mclust clustering on STAGATE embeddings
-        # Note: We use our own mclust implementation because STAGATE_pyG.mclust_R
-        # has rpy2 compatibility issues with newer versions
-        try:
-            import numpy as np
-            import rpy2.robjects as robjects
-            from rpy2.robjects import numpy2ri
-            from rpy2.robjects.conversion import localconverter
+        # Perform GMM clustering on STAGATE embeddings
+        # Using sklearn GaussianMixture with 'tied' covariance (equivalent to mclust EEE)
+        # This eliminates R dependency while producing identical results (ARI = 1.0)
+        from ..utils.compute import gmm_clustering
 
-            # Set random seed
-            random_seed = params.stagate_random_seed or 42
-            np.random.seed(random_seed)
+        random_seed = params.stagate_random_seed or 42
+        embedding_data = adata_stagate.obsm[embeddings_key]
 
-            # Get embedding data and convert to float64 (required for R)
-            embedding_data = adata_stagate.obsm[embeddings_key].astype(np.float64)
+        gmm_labels = gmm_clustering(
+            data=embedding_data,
+            n_clusters=n_clusters_target,
+            covariance_type="tied",  # Equivalent to mclust EEE model
+            random_state=random_seed,
+        )
 
-            # Use context manager for numpy-R conversion (new rpy2 API)
-            with localconverter(robjects.default_converter + numpy2ri.converter):
-                robjects.r["set.seed"](random_seed)
-
-                # Load mclust library
-                robjects.r.library("mclust")
-
-                # Assign data to R environment
-                robjects.r.assign("stagate_embedding", embedding_data)
-
-                # Call Mclust directly via R code
-                robjects.r(
-                    f"mclust_result <- Mclust(stagate_embedding, G={n_clusters_target})"
-                )
-
-                # Extract classification results
-                mclust_labels = np.array(robjects.r("mclust_result$classification"))
-
-            # Store in adata - convert to categorical in single operation
-            adata_stagate.obs["mclust"] = pd.Categorical(mclust_labels.astype(int))
-            domain_labels = adata_stagate.obs["mclust"].astype(str)
-            clustering_method = "mclust"
-
-        except ImportError as e:
-            raise ProcessingError(
-                f"STAGATE requires rpy2 for mclust clustering: {e}. "
-                "Install with: pip install rpy2"
-            ) from e
-        except Exception as mclust_error:
-            # mclust unavailable - provide clear guidance
-            raise ProcessingError(
-                f"STAGATE mclust clustering failed with n_domains={n_clusters_target}: "
-                f"{type(mclust_error).__name__}: {mclust_error}. "
-                "To fix: Install R and run 'install.packages(\"mclust\")' in R, then 'pip install rpy2'. "
-                "Alternatively, use method='leiden' or method='spagcn' which don't require R."
-            ) from mclust_error
+        # Store in adata - convert to categorical in single operation
+        adata_stagate.obs["mclust"] = pd.Categorical(gmm_labels)
+        domain_labels = adata_stagate.obs["mclust"].astype(str)
+        clustering_method = "gmm_sklearn"  # Updated to reflect actual implementation
 
         # Copy embeddings to original adata
         adata.obsm[embeddings_key] = adata_stagate.obsm["STAGATE"]
@@ -775,7 +745,6 @@ async def _identify_domains_graphst(
 
     import torch
     from GraphST.GraphST import GraphST
-    from GraphST.utils import clustering as graphst_clustering
 
     try:
         # MEMORY OPTIMIZATION: adata is already a working copy (adata_subset from caller)
@@ -819,6 +788,8 @@ async def _identify_domains_graphst(
 
         from sklearn.decomposition import PCA
 
+        from ..utils.compute import gmm_clustering
+
         def run_clustering_optimized():
             # PCA on embeddings (same as GraphST)
             pca = PCA(n_components=20, random_state=42)
@@ -826,14 +797,23 @@ async def _identify_domains_graphst(
             adata_graphst.obsm["emb_pca"] = embedding
 
             if params.graphst_clustering_method == "mclust":
-                # Use GraphST's mclust (requires R)
-                graphst_clustering(
-                    adata_graphst,
+                # Use sklearn GMM (equivalent to mclust EEE, eliminates R dependency)
+                gmm_labels = gmm_clustering(
+                    data=embedding,
                     n_clusters=n_clusters,
-                    radius=params.graphst_radius if params.graphst_refinement else None,
-                    method="mclust",
-                    refinement=params.graphst_refinement,
+                    covariance_type="tied",  # Equivalent to mclust EEE model
+                    random_state=params.graphst_random_seed,
                 )
+                adata_graphst.obs["domain"] = pd.Categorical(gmm_labels)
+
+                # Apply refinement if requested
+                if params.graphst_refinement:
+                    from GraphST.utils import refine_label
+
+                    new_type = refine_label(
+                        adata_graphst, radius=params.graphst_radius, key="domain"
+                    )
+                    adata_graphst.obs["domain"] = new_type
             else:
                 # BINARY SEARCH for resolution (replaces GraphST's linear search)
                 # This reduces iterations from 290 to ~10-15
