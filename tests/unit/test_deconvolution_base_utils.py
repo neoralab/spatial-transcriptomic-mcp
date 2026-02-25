@@ -5,12 +5,16 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import pytest
+from scipy import sparse
 
 from chatspatial.tools.deconvolution.base import (
     MethodConfig,
     _prepare_counts,
+    check_model_convergence,
     create_deconvolution_stats,
+    prepare_deconvolution,
 )
+from chatspatial.utils.exceptions import DataError
 
 
 class DummyCtx:
@@ -85,3 +89,134 @@ async def test_prepare_counts_converts_integer_like_data_to_int32(minimal_spatia
     out = await _prepare_counts(adata, "Spatial", DummyCtx(), require_int_dtype=True)
     assert out.X.dtype == np.int32
 
+
+@pytest.mark.asyncio
+async def test_prepare_counts_prefers_counts_layer_when_raw_absent(minimal_spatial_adata):
+    adata = minimal_spatial_adata.copy()
+    if adata.raw is not None:
+        adata.raw = None
+    counts = np.full((adata.n_obs, adata.n_vars), 7.0, dtype=np.float64)
+    adata.layers["counts"] = counts
+    adata.X = np.zeros_like(counts)
+
+    out = await _prepare_counts(adata, "Spatial", DummyCtx(), require_int_dtype=False)
+    assert np.allclose(out.X, counts)
+
+
+@pytest.mark.asyncio
+async def test_prepare_counts_does_not_force_int_for_decimal_values(minimal_spatial_adata):
+    adata = minimal_spatial_adata.copy()
+    adata.X = np.asarray(adata.X, dtype=np.float64) + 0.123
+
+    out = await _prepare_counts(adata, "Spatial", DummyCtx(), require_int_dtype=True)
+    assert out.X.dtype == np.float64
+
+
+@pytest.mark.asyncio
+async def test_prepare_counts_handles_empty_sparse_matrix_sampling(minimal_spatial_adata):
+    adata = minimal_spatial_adata.copy()
+    adata.X = sparse.csr_matrix((adata.n_obs, adata.n_vars), dtype=np.float64)
+
+    out = await _prepare_counts(adata, "Spatial", DummyCtx(), require_int_dtype=True)
+    assert out.X.dtype == np.int32
+    assert out.X.shape == (adata.n_obs, adata.n_vars)
+
+
+@pytest.mark.asyncio
+async def test_prepare_deconvolution_with_preprocess_hook_and_no_spatial_key(
+    minimal_spatial_adata,
+):
+    spatial = minimal_spatial_adata.copy()
+    reference = minimal_spatial_adata.copy()
+    reference.obs["cell_type"] = ["A"] * (reference.n_obs // 2) + ["B"] * (
+        reference.n_obs - reference.n_obs // 2
+    )
+    del spatial.obsm["spatial"]
+
+    calls = {"preprocess": 0}
+
+    async def _preprocess(sp, ref, _ctx):
+        calls["preprocess"] += 1
+        sp = sp.copy()
+        ref = ref.copy()
+        sp.uns["prep"] = "ok"
+        ref.uns["prep"] = "ok"
+        return sp, ref
+
+    data = await prepare_deconvolution(
+        spatial_adata=spatial,
+        reference_adata=reference,
+        cell_type_key="cell_type",
+        ctx=DummyCtx(),
+        min_common_genes=5,
+        preprocess=_preprocess,
+    )
+
+    assert calls["preprocess"] == 1
+    assert data.spatial_coords is None
+    assert data.n_spots == spatial.n_obs
+    assert data.n_cell_types == 2
+    assert data.n_genes == spatial.n_vars
+    assert data.spatial.uns["prep"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_prepare_deconvolution_rejects_single_cell_type(minimal_spatial_adata):
+    spatial = minimal_spatial_adata.copy()
+    reference = minimal_spatial_adata.copy()
+    reference.obs["cell_type"] = ["A"] * reference.n_obs
+
+    with pytest.raises(DataError, match="at least 2 cell types"):
+        await prepare_deconvolution(
+            spatial_adata=spatial,
+            reference_adata=reference,
+            cell_type_key="cell_type",
+            ctx=DummyCtx(),
+            min_common_genes=5,
+        )
+
+
+def test_method_config_requires_reference_is_true():
+    cfg = MethodConfig(module_name="x", dependencies=("dep",))
+    assert cfg.requires_reference is True
+
+
+def test_check_model_convergence_returns_true_without_history():
+    model = object()
+    converged, message = check_model_convergence(model, "Dummy")
+    assert converged is True
+    assert message is None
+
+
+def test_check_model_convergence_returns_true_for_short_history():
+    model = type("Model", (), {"history": {"elbo_train": [1.0, 0.9, 0.8]}})()
+    converged, message = check_model_convergence(
+        model, "Dummy", convergence_window=10
+    )
+    assert converged is True
+    assert message is None
+
+
+def test_check_model_convergence_detects_unstable_training():
+    history = [1.0, 3.0, 1.2, 3.1, 1.1, 3.2, 1.0, 3.3, 1.2, 3.0]
+    model = type("Model", (), {"history": {"elbo_validation": history}})()
+    converged, message = check_model_convergence(
+        model,
+        "DemoModel",
+        convergence_threshold=0.05,
+        convergence_window=10,
+    )
+    assert converged is False
+    assert "DemoModel may not have fully converged" in (message or "")
+
+
+def test_check_model_convergence_handles_zero_mean_without_warning():
+    history = [0.0] * 10
+    model = type("Model", (), {"history": {"train_loss_epoch": history}})()
+    converged, message = check_model_convergence(
+        model,
+        "ZeroModel",
+        convergence_window=10,
+    )
+    assert converged is True
+    assert message is None
