@@ -1981,6 +1981,45 @@ def test_analyze_communication_cellchat_r_spatial_contact_range_and_db_category(
     assert set(fake_ro.globalenv["meta_df"]["labels"].unique()) == {"cluster_0", "cluster_1"}
 
 
+def test_analyze_communication_cellchat_r_spatial_uses_contact_knn_when_range_is_none(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    adata.obs["cell_type"] = pd.Categorical(["T"] * adata.n_obs)
+
+    r_exec, _fake_ro = _install_fake_rpy2(
+        monkeypatch,
+        cellchat_genes=["gene_0", "gene_1", "gene_2", "gene_3"],
+    )
+
+    monkeypatch.setattr(ccc, "validate_obs_column", lambda *_a, **_k: None)
+    monkeypatch.setattr(ccc, "get_spatial_key", lambda *_a, **_k: "spatial")
+    monkeypatch.setattr(
+        ccc,
+        "get_raw_data_source",
+        lambda _adata, prefer_complete_genes=True: type(
+            "Raw",
+            (),
+            {"X": np.asarray(_adata.X), "var_names": pd.Index(_adata.var_names)},
+        )(),
+    )
+
+    out = ccc._analyze_communication_cellchat_r(
+        adata,
+        CellCommunicationParameters(
+            method="cellchat_r",
+            species="human",
+            cell_type_key="cell_type",
+            cellchat_contact_range=None,
+            cellchat_contact_knn_k=9,
+        ),
+        DummyCtx(),
+    )
+
+    assert out.statistics["spatial_mode"] is True
+    assert "contact.knn.k = 9" in "\n".join(r_exec.scripts)
+
+
 def test_analyze_communication_cellchat_r_no_gene_overlap_is_wrapped(
     minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
 ):
@@ -2011,3 +2050,64 @@ def test_analyze_communication_cellchat_r_no_gene_overlap_is_wrapped(
             ),
             DummyCtx(),
         )
+
+
+@pytest.mark.asyncio
+async def test_analyze_communication_fastccc_cauchy_reads_percentages_when_present(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    import os
+    import sys
+    import types
+
+    adata = minimal_spatial_adata.copy()
+    adata.obs["cell_type"] = pd.Categorical(["T"] * adata.n_obs)
+
+    def _fake_cauchy(**kwargs):
+        save_path = kwargs["save_path"]
+        task_id = "task_y"
+        pd.DataFrame({"T|T": [0.01]}, index=["L1^R1"]).to_csv(
+            os.path.join(save_path, f"{task_id}_Cauchy_pvals.tsv"), sep="\t"
+        )
+        pd.DataFrame({"T|T": [0.9]}, index=["L1^R1"]).to_csv(
+            os.path.join(save_path, f"{task_id}_average_interactions_strength.tsv"),
+            sep="\t",
+        )
+        pd.DataFrame({"T|T": [0.7]}, index=["L1^R1"]).to_csv(
+            os.path.join(save_path, f"{task_id}_percents_analysis.tsv"), sep="\t"
+        )
+
+    fake_fastccc = types.ModuleType("fastccc")
+    fake_fastccc.Cauchy_combination_of_statistical_analysis_methods = _fake_cauchy
+    sys.modules["fastccc"] = fake_fastccc
+
+    monkeypatch.setattr(
+        ccc,
+        "get_raw_data_source",
+        lambda *_a, **_k: type(
+            "Raw",
+            (),
+            {"X": np.asarray(adata.X), "var_names": adata.var_names},
+        )(),
+    )
+    import os.path as osp
+
+    _orig_exists = osp.exists
+    monkeypatch.setattr(
+        "os.path.exists",
+        lambda p: True if str(p).endswith("interaction_table.csv") else _orig_exists(p),
+    )
+
+    out = await ccc._analyze_communication_fastccc(
+        adata,
+        CellCommunicationParameters(
+            method="fastccc",
+            species="human",
+            cell_type_key="cell_type",
+            fastccc_use_cauchy=True,
+            fastccc_pvalue_threshold=0.05,
+        ),
+        DummyCtx(),
+    )
+
+    assert out.method_data["percentages"] is not None
