@@ -792,6 +792,58 @@ async def test_singler_default_celldex_reference_path_runs_successfully(
 
 
 @pytest.mark.asyncio
+async def test_singler_celldex_label_fallback_and_integrated_branch(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+
+    class _Ref(list):
+        def get_column_data(self):
+            return self
+
+        def column(self, name: str):
+            if name == "label.main":
+                raise KeyError("missing main label")
+            if name == "label.fine":
+                return ["T"] * adata.n_obs
+            raise KeyError(name)
+
+    class _Integrated:
+        def column(self, name: str):
+            if name == "best_label":
+                return ["T"] * adata.n_obs
+            if name == "scores":
+                return pd.DataFrame({"T": [0.9] * adata.n_obs})
+            raise KeyError(name)
+
+    fake_celldex = ModuleType("celldex")
+    fake_celldex.fetch_reference = lambda *_a, **_k: _Ref([1, 2, 3])
+    fake_singler = ModuleType("singler")
+    fake_singler.annotate_integrated = lambda *_a, **_k: (None, _Integrated())
+    monkeypatch.setitem(__import__("sys").modules, "celldex", fake_celldex)
+    monkeypatch.setitem(__import__("sys").modules, "singler", fake_singler)
+    monkeypatch.setattr(ann, "require", lambda *_a, **_k: None)
+    monkeypatch.setattr(ann, "is_available", lambda name: name == "celldex")
+    monkeypatch.setattr(
+        ann,
+        "get_raw_data_source",
+        lambda _adata, prefer_complete_genes=False: SimpleNamespace(X=_adata.X),
+    )
+
+    out = await ann._annotate_with_singler(
+        adata,
+        AnnotationParameters(method="singler", singler_integrated=True, singler_reference="hpca"),
+        DummyWarnCtx(),
+        "cell_type_singler",
+        "confidence_singler",
+        reference_adata=None,
+    )
+
+    assert out.cell_types == ["T"]
+    assert out.confidence == {"T": 0.9}
+
+
+@pytest.mark.asyncio
 async def test_singler_custom_reference_requires_cell_type_key(
     minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
 ):
@@ -933,6 +985,55 @@ async def test_tangram_requires_hvg_when_training_genes_and_markers_not_provided
 
 
 @pytest.mark.asyncio
+async def test_tangram_uses_marker_genes_when_training_genes_not_given(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    ref = minimal_spatial_adata.copy()
+    ref.obs["ctype"] = pd.Categorical(["B"] * ref.n_obs)
+    seen: dict[str, object] = {}
+
+    fake_tg = ModuleType("tangram")
+
+    def _pp_adatas(_adata_sc, _adata_sp, genes):
+        seen["genes"] = genes
+
+    fake_tg.pp_adatas = _pp_adatas
+    fake_tg.map_cells_to_space = lambda *_a, **_k: SimpleNamespace(
+        uns={"training_history": {"main_loss": [1.0]}}
+    )
+    fake_tg.project_cell_annotations = lambda _ad_map, adata_sp, annotation: adata_sp.obsm.__setitem__(
+        "tangram_ct_pred",
+        pd.DataFrame({"B": np.ones(adata_sp.n_obs, dtype=float)}, index=adata_sp.obs_names),
+    )
+    monkeypatch.setitem(__import__("sys").modules, "tangram", fake_tg)
+
+    async def _no_dupes(*_args, **_kwargs):
+        return 0
+
+    monkeypatch.setattr(ann, "require", lambda *_a, **_k: None)
+    monkeypatch.setattr(ann, "ensure_unique_var_names_async", _no_dupes)
+    monkeypatch.setattr(ann, "get_device", lambda prefer_gpu=False: "cpu")
+    monkeypatch.setattr(ann, "shallow_copy_adata", lambda x: x)
+
+    await ann._annotate_with_tangram(
+        adata,
+        AnnotationParameters(
+            method="tangram",
+            cell_type_key="ctype",
+            training_genes=None,
+            marker_genes={"B": ["gene_0", "gene_1"], "T": ["gene_1", "gene_2"]},
+        ),
+        DummyWarnCtx(),
+        "cell_type_tangram",
+        "confidence_tangram",
+        reference_adata=ref,
+    )
+
+    assert set(seen["genes"]) == {"gene_0", "gene_1", "gene_2"}
+
+
+@pytest.mark.asyncio
 async def test_tangram_stores_validation_scores_on_success(
     minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
 ):
@@ -975,6 +1076,48 @@ async def test_tangram_stores_validation_scores_on_success(
     )
 
     assert "tangram_validation_scores" in adata.uns
+
+
+@pytest.mark.asyncio
+async def test_tangram_warns_when_cell_type_key_missing_then_fails_without_predictions(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    ref = minimal_spatial_adata.copy()
+    ref.obs["available_col"] = pd.Categorical(["B"] * ref.n_obs)
+
+    fake_tg = ModuleType("tangram")
+    fake_tg.pp_adatas = lambda *_a, **_k: None
+    fake_tg.map_cells_to_space = lambda *_a, **_k: SimpleNamespace(
+        uns={"training_history": {"main_loss": [1.0]}}
+    )
+    monkeypatch.setitem(__import__("sys").modules, "tangram", fake_tg)
+
+    async def _no_dupes(*_args, **_kwargs):
+        return 0
+
+    monkeypatch.setattr(ann, "require", lambda *_a, **_k: None)
+    monkeypatch.setattr(ann, "ensure_unique_var_names_async", _no_dupes)
+    monkeypatch.setattr(ann, "get_device", lambda prefer_gpu=False: "cpu")
+    monkeypatch.setattr(ann, "shallow_copy_adata", lambda x: x)
+
+    ctx = DummyWarnCtx()
+    with pytest.raises(ProcessingError, match="no cell type predictions"):
+        await ann._annotate_with_tangram(
+            adata,
+            AnnotationParameters(
+                method="tangram",
+                cell_type_key="missing_key",
+                training_genes=["gene_0"],
+            ),
+            ctx,
+            "cell_type_tangram",
+            "confidence_tangram",
+            reference_adata=ref,
+        )
+
+    assert any("Cell type column 'missing_key' not found" in msg for msg in ctx.warnings)
+    assert any("Could not project cell annotations" in msg for msg in ctx.warnings)
 
 
 @pytest.mark.asyncio

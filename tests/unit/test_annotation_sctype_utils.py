@@ -448,6 +448,80 @@ def test_run_sctype_scoring_converts_r_matrix_to_dataframe(
     assert assigned["gs_list"] == {"ok": True}
 
 
+def test_run_sctype_scoring_preserves_dataframe_and_relabels_axes(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    params = AnnotationParameters(method="sctype", sctype_tissue="Brain", sctype_scaled=False)
+
+    class _Conv:
+        def __add__(self, _other):
+            return self
+
+    class _Lock:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _LCtx:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _R:
+        def assign(self, key: str, value):
+            del key, value
+
+        def __call__(self, code: str):
+            if code == "rownames(es_max)":
+                return ["TypeA", "TypeB"]
+            if code == "colnames(es_max)":
+                return ["cell_a", "cell_b"]
+            return None
+
+        def __getitem__(self, name: str):
+            if name == "es_max":
+                return pd.DataFrame(
+                    [[3.0, 1.0], [0.5, 2.0]],
+                    index=["x", "y"],
+                    columns=["u", "v"],
+                )
+            raise KeyError(name)
+
+    fake_conversion = ModuleType("conversion")
+    fake_conversion.localconverter = lambda _converter: _LCtx()
+    fake_robjects_mod = ModuleType("rpy2.robjects")
+    fake_robjects_mod.conversion = fake_conversion
+    monkeypatch.setitem(__import__("sys").modules, "rpy2.robjects", fake_robjects_mod)
+
+    robjects = SimpleNamespace(r=_R())
+    converter = _Conv()
+    openrlib = SimpleNamespace(rlock=_Lock())
+    monkeypatch.setattr(
+        ann,
+        "validate_r_environment",
+        lambda _ctx: (
+            robjects,
+            SimpleNamespace(converter=converter),
+            SimpleNamespace(converter=converter),
+            None,
+            None,
+            converter,
+            openrlib,
+            SimpleNamespace(converter=converter),
+        ),
+    )
+
+    out = ann._run_sctype_scoring(adata, gs_list={"ok": True}, params=params, ctx=DummyCtx())
+
+    assert list(out.index) == ["TypeA", "TypeB"]
+    assert list(out.columns) == ["cell_a", "cell_b"]
+
+
 def test_load_cached_sctype_results_returns_memory_cache_hit(monkeypatch: pytest.MonkeyPatch):
     expected = (["T"], {"T": 1}, {"T": 0.9}, None)
     monkeypatch.setattr(ann, "_SCTYPE_CACHE", {"hit": expected})

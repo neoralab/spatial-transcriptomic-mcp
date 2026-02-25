@@ -228,6 +228,7 @@ async def _annotate_with_singler(
     # Run SingleR annotation
     use_integrated = getattr(params, "singler_integrated", False)
     n_threads = getattr(params, "n_threads", 4)
+    delta_scores = None
 
     if use_integrated and isinstance(ref_data, list):
         single_results, integrated = singler.annotate_integrated(
