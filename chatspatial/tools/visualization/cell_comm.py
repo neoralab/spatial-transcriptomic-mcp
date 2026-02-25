@@ -879,13 +879,23 @@ def _create_unified_circle_plot(
         df = df.copy()
         max_val = df[score_col].max()
         df["weight"] = max_val - df[score_col] + 1
-        agg = df.groupby(["source", "target"])["weight"].sum().reset_index()
+        agg = (
+            df.groupby(["source", "target"], sort=False)["weight"]
+            .sum()
+            .reset_index()
+        )
     else:
         # Count interactions
-        agg = df.groupby(["source", "target"]).size().reset_index(name="weight")
+        agg = (
+            df.groupby(["source", "target"], sort=False)
+            .size()
+            .reset_index(name="weight")
+        )
 
-    # Get unique cell types
-    cell_types = list(set(agg["source"].tolist() + agg["target"].tolist()))
+    # Get unique cell types in first-appearance order for stable layout.
+    cell_types = pd.unique(
+        pd.concat([agg["source"], agg["target"]], ignore_index=True)
+    ).tolist()
     n_types = len(cell_types)
 
     # Create figure

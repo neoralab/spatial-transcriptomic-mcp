@@ -123,6 +123,17 @@ async def test_prepare_counts_handles_empty_sparse_matrix_sampling(minimal_spati
 
 
 @pytest.mark.asyncio
+async def test_prepare_counts_integer_sparse_input_stays_sparse(minimal_spatial_adata):
+    adata = minimal_spatial_adata.copy()
+    dense = np.rint(np.asarray(adata.X)).astype(np.float64)
+    adata.X = sparse.csr_matrix(dense)
+
+    out = await _prepare_counts(adata, "Spatial", DummyCtx(), require_int_dtype=True)
+    assert sparse.issparse(out.X)
+    assert out.X.dtype == np.int32
+
+
+@pytest.mark.asyncio
 async def test_prepare_deconvolution_with_preprocess_hook_and_no_spatial_key(
     minimal_spatial_adata,
 ):

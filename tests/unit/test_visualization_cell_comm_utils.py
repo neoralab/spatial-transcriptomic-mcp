@@ -830,6 +830,8 @@ def test_create_unified_circle_plot_supports_weighted_and_count_modes():
         VisualizationParameters(plot_type="communication", subtype="circle_plot"),
     )
     assert fig2.axes[0].name == "polar"
+    labels = [text.get_text() for text in fig2.axes[0].texts]
+    assert labels[:2] == ["T", "B"]
     fig2.clf()
 
     with pytest.raises(DataNotFoundError, match="No cellphonedb results found"):
