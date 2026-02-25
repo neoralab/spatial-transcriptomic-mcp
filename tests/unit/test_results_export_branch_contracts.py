@@ -87,6 +87,18 @@ def test_extract_from_uns_covers_dataframe_ripley_dict_structured_and_unsupporte
     assert re._extract_from_uns(adata, "unsupported") is None
 
 
+def test_extract_from_uns_routes_squidpy_keys_to_spatial_extractor(
+    minimal_spatial_adata,
+) -> None:
+    adata = minimal_spatial_adata.copy()
+    adata.obs["domain"] = pd.Categorical([f"d{i % 3}" for i in range(adata.n_obs)])
+    adata.uns["domain_nhood_enrichment"] = {"zscore": np.ones((3, 3))}
+
+    out = re._extract_from_uns(adata, "domain_nhood_enrichment")
+    assert isinstance(out, pd.DataFrame)
+    assert any(c.startswith("zscore_") for c in out.columns)
+
+
 def test_extract_squidpy_result_handles_non_dict_missing_cluster_and_empty_metrics(
     minimal_spatial_adata,
 ) -> None:
@@ -112,10 +124,37 @@ def test_extract_squidpy_result_handles_non_dict_missing_cluster_and_empty_metri
     assert any(c.startswith("count_") for c in out_2d.columns)
 
 
+def test_extract_squidpy_result_rejects_unrecognized_key_suffix(
+    minimal_spatial_adata,
+) -> None:
+    adata = minimal_spatial_adata.copy()
+    adata.obs["domain"] = pd.Categorical([f"d{i % 2}" for i in range(adata.n_obs)])
+    assert re._extract_squidpy_spatial_result(adata, "domain", {"zscore": np.eye(2)}) is None
+
+
 def test_extract_from_obs_and_var_return_none_for_non_matching_key(minimal_spatial_adata) -> None:
     adata = minimal_spatial_adata.copy()
     assert re._extract_from_obs(adata, "not_present") is None
     assert re._extract_from_var(adata, "not_present") is None
+
+
+def test_extract_from_obs_and_var_exact_match_fallback_for_non_substring_keys() -> None:
+    class _Key:
+        def __contains__(self, _item) -> bool:
+            return False
+
+    obs_key = _Key()
+    var_key = _Key()
+    adata = SimpleNamespace(
+        obs=pd.DataFrame({obs_key: [1, 2]}, index=["c0", "c1"]),
+        var=pd.DataFrame({var_key: [0.1, 0.2]}, index=["g0", "g1"]),
+    )
+
+    out_obs = re._extract_from_obs(adata, obs_key)
+    out_var = re._extract_from_var(adata, var_key)
+
+    assert out_obs is not None and list(out_obs.columns) == [obs_key]
+    assert out_var is not None and list(out_var.columns) == [var_key]
 
 
 def test_extract_from_obsm_covers_missing_dataframe_array_and_unknown_object(
@@ -143,6 +182,14 @@ def test_extract_from_obsm_covers_missing_dataframe_array_and_unknown_object(
             self.uns = {}
 
     assert re._extract_from_obsm(_FakeAdata(), "unknown") is None
+
+
+def test_extract_as_dataframe_routes_obsm_location(minimal_spatial_adata) -> None:
+    adata = minimal_spatial_adata.copy()
+    adata.obsm["latent"] = np.ones((adata.n_obs, 2), dtype=float)
+    out = re._extract_as_dataframe(adata, "obsm", "latent", "demo")
+    assert isinstance(out, pd.DataFrame)
+    assert list(out.columns) == ["latent_0", "latent_1"]
 
 
 def test_infer_obsm_columns_prefers_metadata_and_falls_back(minimal_spatial_adata) -> None:
