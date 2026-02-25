@@ -560,12 +560,15 @@ def test_analyze_spatial_centrality_handles_missing_node_keys(
 
     monkeypatch.setitem(__import__("sys").modules, "networkx", fake_nx)
 
-    out = ss._analyze_spatial_centrality(
-        adata,
-        cluster_key="group",
-        params=SpatialStatisticsParameters(analysis_type="spatial_centrality", n_neighbors=4),
-        ctx=DummyCtx(adata),
-    )
+    with pytest.warns(UserWarning, match="Centrality computation incomplete"):
+        out = ss._analyze_spatial_centrality(
+            adata,
+            cluster_key="group",
+            params=SpatialStatisticsParameters(
+                analysis_type="spatial_centrality", n_neighbors=4
+            ),
+            ctx=DummyCtx(adata),
+        )
 
     assert out["centrality_computed"] is True
     assert "degree_centrality" in adata.obs.columns

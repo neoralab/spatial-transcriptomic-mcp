@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import logging
+import warnings
 from types import ModuleType, SimpleNamespace
 
 import numpy as np
 import pytest
 import scipy.sparse as sp
-from anndata import AnnData
+from anndata import AnnData, ImplicitModificationWarning
 
 from chatspatial.tools.integration import (
     align_spatial_coordinates,
@@ -309,7 +310,7 @@ def _install_classical_integration_mocks(
 
     def _fake_pca(adata, n_comps, svd_solver, zero_center=False):
         del svd_solver, zero_center
-        adata.obsm["X_pca"] = np.zeros((adata.n_obs, n_comps), dtype=np.float32)
+        _set_obsm(adata, "X_pca", np.zeros((adata.n_obs, n_comps), dtype=np.float32))
 
     monkeypatch.setattr("scanpy.tl.pca", _fake_pca)
     monkeypatch.setattr("scanpy.tl.umap", lambda *_args, **_kwargs: None)
@@ -331,6 +332,19 @@ def _install_classical_integration_mocks(
 
 def _set_hvg_value(adata, value: bool) -> None:
     adata.var.loc[:, "highly_variable"] = bool(value)
+
+
+def _set_obsm(adata, key: str, value) -> None:
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=ImplicitModificationWarning)
+        adata.obsm[key] = value
+
+
+def _set_x(adata, value) -> None:
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=FutureWarning)
+        warnings.simplefilter("ignore", category=ImplicitModificationWarning)
+        adata.X = value
 
 
 
@@ -412,12 +426,11 @@ def test_integrate_multiple_samples_scanorama_wrapper_path_uses_x_scanorama(
     captured: dict[str, object] = {}
     _install_classical_integration_mocks(monkeypatch, captured)
 
-    monkeypatch.setattr(
-        "scanpy.external.pp.scanorama_integrate",
-        lambda combined, key, basis, adjusted_basis: combined.obsm.__setitem__(
-            adjusted_basis, np.zeros((combined.n_obs, 2), dtype=np.float32)
-        ),
-    )
+    def _scanorama_integrate(combined, key, basis, adjusted_basis):
+        del key, basis
+        _set_obsm(combined, adjusted_basis, np.zeros((combined.n_obs, 2), dtype=np.float32))
+
+    monkeypatch.setattr("scanpy.external.pp.scanorama_integrate", _scanorama_integrate)
 
     out = integrate_multiple_samples(adata, method="scanorama", batch_key="batch", n_pcs=3)
 
@@ -483,6 +496,8 @@ def test_integrate_multiple_samples_cleans_var_na_and_diffmap_artifacts(
     ad2.var["flag"] = [True, True, False, False]
     ad1.var["symbol"] = ["A", "B", "C", "D"]
     ad2.var["symbol"] = ["C", "D", "E", "F"]
+    ad1.obs_names = [f"{name}_b1" for name in ad1.obs_names]
+    ad2.obs_names = [f"{name}_b2" for name in ad2.obs_names]
 
     captured: dict[str, object] = {}
     _install_classical_integration_mocks(monkeypatch, captured)
@@ -494,12 +509,20 @@ def test_integrate_multiple_samples_cleans_var_na_and_diffmap_artifacts(
 
     def _fake_pca(adata, n_comps, svd_solver, zero_center=False):
         del svd_solver, zero_center
-        adata.obsm["X_pca"] = np.zeros((adata.n_obs, min(n_comps, 3)), dtype=np.float32)
+        _set_obsm(adata, "X_pca", np.zeros((adata.n_obs, min(n_comps, 3)), dtype=np.float32))
 
     monkeypatch.setattr("scanpy.tl.pca", _fake_pca)
     monkeypatch.setattr("scanpy.pp.neighbors", lambda *_args, **_kwargs: None)
 
-    out = integrate_multiple_samples([ad1, ad2], method="not_real", batch_key="batch", n_pcs=3)
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="Downcasting object dtype arrays on .fillna",
+            category=FutureWarning,
+        )
+        out = integrate_multiple_samples(
+            [ad1, ad2], method="not_real", batch_key="batch", n_pcs=3
+        )
 
     assert out.var["flag"].dtype == bool
     assert out.var["symbol"].dtype == object
@@ -577,8 +600,8 @@ def test_integrate_multiple_samples_sparse_zero_variance_and_scale_fallback(
     monkeypatch.setattr("scanpy.pp.scale", _scale)
     monkeypatch.setattr(
         "scanpy.tl.pca",
-        lambda adata, n_comps, svd_solver, zero_center=False: adata.obsm.__setitem__(
-            "X_pca", np.zeros((adata.n_obs, min(n_comps, 3)), dtype=np.float32)
+        lambda adata, n_comps, svd_solver, zero_center=False: _set_obsm(
+            adata, "X_pca", np.zeros((adata.n_obs, min(n_comps, 3)), dtype=np.float32)
         ),
     )
     monkeypatch.setattr("scanpy.pp.neighbors", lambda *_args, **_kwargs: None)
@@ -634,7 +657,7 @@ def test_integrate_multiple_samples_pca_nan_inf_and_solver_failures(
     def _scale_nan(adata_obj, **_kwargs):
         arr = np.asarray(adata_obj.X, dtype=np.float32).copy()
         arr[0, 0] = np.nan
-        adata_obj.X = arr
+        _set_x(adata_obj, arr)
 
     monkeypatch.setattr("scanpy.pp.scale", _scale_nan)
     adata_nan = adata.copy()
@@ -644,7 +667,7 @@ def test_integrate_multiple_samples_pca_nan_inf_and_solver_failures(
     def _scale_inf(adata_obj, **_kwargs):
         arr = np.asarray(adata_obj.X, dtype=np.float32).copy()
         arr[0, 0] = np.inf
-        adata_obj.X = arr
+        _set_x(adata_obj, arr)
 
     monkeypatch.setattr("scanpy.pp.scale", _scale_inf)
     adata_inf = adata.copy()

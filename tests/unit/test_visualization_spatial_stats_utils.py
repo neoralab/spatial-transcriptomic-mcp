@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import warnings
 from types import ModuleType, SimpleNamespace
 
 import matplotlib.pyplot as plt
@@ -299,13 +300,19 @@ async def test_getis_ord_visualization_validation_and_success(
     monkeypatch.setattr(viz_ss, "auto_spot_size", lambda *_a, **_k: 20.0)
 
     ctx = DummyCtx()
-    fig = await viz_ss._create_getis_ord_visualization(
-        adata,
-        VisualizationParameters(
-            plot_type="statistics", subtype="getis_ord", feature=["gene_0", "gene_1"]
-        ),
-        context=ctx,
-    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=".*not compatible with tight_layout.*",
+            category=UserWarning,
+        )
+        fig = await viz_ss._create_getis_ord_visualization(
+            adata,
+            VisualizationParameters(
+                plot_type="statistics", subtype="getis_ord", feature=["gene_0", "gene_1"]
+            ),
+            context=ctx,
+        )
     assert any("Plotting Getis-Ord results for 2 genes" in msg for msg in ctx.infos)
     assert len(fig.axes) >= 2
     fig.clf()

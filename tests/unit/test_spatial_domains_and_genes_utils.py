@@ -635,6 +635,7 @@ async def test_identify_domains_stagate_timeout_is_wrapped(
 async def test_identify_domains_graphst_mclust_path_success(
     minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
 ):
+    import warnings
     import sys
     import types
 
@@ -673,17 +674,23 @@ async def test_identify_domains_graphst_mclust_path_success(
 
     monkeypatch.setattr(sd, "resolve_device_async", _fake_resolve_device)
 
-    labels, emb_key, stats = await sd._identify_domains_graphst(
-        adata,
-        SpatialDomainParameters(
-            method="graphst",
-            graphst_clustering_method="mclust",
-            graphst_refinement=False,
-            graphst_n_clusters=4,
-            n_domains=4,
-        ),
-        DummyCtx(adata),
-    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="invalid value encountered in divide",
+            category=RuntimeWarning,
+        )
+        labels, emb_key, stats = await sd._identify_domains_graphst(
+            adata,
+            SpatialDomainParameters(
+                method="graphst",
+                graphst_clustering_method="mclust",
+                graphst_refinement=False,
+                graphst_n_clusters=4,
+                n_domains=4,
+            ),
+            DummyCtx(adata),
+        )
 
     assert len(labels) == adata.n_obs
     assert emb_key == "emb"

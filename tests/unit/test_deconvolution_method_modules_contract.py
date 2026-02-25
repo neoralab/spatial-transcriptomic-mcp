@@ -636,8 +636,9 @@ def test_cell2location_deconvolve_success_with_fake_models(
     monkeypatch.setitem(__import__("sys").modules, "cell2location", cell2location_pkg)
     monkeypatch.setitem(__import__("sys").modules, "cell2location.models", models_mod)
 
-    with pytest.warns(UserWarning, match="not converged"):
+    with pytest.warns(UserWarning) as record:
         proportions, stats = c2l_module.deconvolve(data, n_epochs=5, ref_model_epochs=5)
+    assert any("not converged" in str(w.message) for w in record)
 
     assert proportions.shape == (data.n_spots, 2)
     assert set(proportions.columns) == {"A", "B"}

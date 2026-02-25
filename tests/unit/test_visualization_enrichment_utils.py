@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import warnings
 from types import ModuleType
 
 import matplotlib.pyplot as plt
@@ -339,31 +340,43 @@ async def test_create_enrichment_spatial_multifeature_and_single_feature_paths(
 
     monkeypatch.setattr(viz_enrich, "plot_spatial_feature", _fake_plot_spatial_feature)
 
-    fig_multi = await viz_enrich._create_enrichment_spatial(
-        adata,
-        VisualizationParameters(
-            plot_type="enrichment",
-            subtype="spatial",
-            feature=["A_score", "B_score"],
-        ),
-        score_cols=["A_score", "B_score"],
-        context=None,
-    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=".*not compatible with tight_layout.*",
+            category=UserWarning,
+        )
+        fig_multi = await viz_enrich._create_enrichment_spatial(
+            adata,
+            VisualizationParameters(
+                plot_type="enrichment",
+                subtype="spatial",
+                feature=["A_score", "B_score"],
+            ),
+            score_cols=["A_score", "B_score"],
+            context=None,
+        )
     assert seen[:2] == ["A_score", "B_score"]
     fig_multi.clf()
 
     ctx = DummyCtx()
-    fig_single = await viz_enrich._create_enrichment_spatial(
-        adata,
-        VisualizationParameters(
-            plot_type="enrichment",
-            subtype="spatial",
-            feature="A",
-            show_colorbar=True,
-        ),
-        score_cols=["A_score", "B_score"],
-        context=ctx,
-    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=".*not compatible with tight_layout.*",
+            category=UserWarning,
+        )
+        fig_single = await viz_enrich._create_enrichment_spatial(
+            adata,
+            VisualizationParameters(
+                plot_type="enrichment",
+                subtype="spatial",
+                feature="A",
+                show_colorbar=True,
+            ),
+            score_cols=["A_score", "B_score"],
+            context=ctx,
+        )
     assert any("Using score column: A_score" in msg for msg in ctx.infos)
     fig_single.clf()
 

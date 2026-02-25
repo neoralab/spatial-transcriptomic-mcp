@@ -12,6 +12,8 @@ import pytest
 
 from chatspatial.utils.data_loader import _load_xenium_zarr
 
+pytestmark = pytest.mark.filterwarnings("ignore:Duplicate name:UserWarning")
+
 
 def _create_xenium_zarr_fixture(tmp_path):
     """Create minimal Xenium zarr.zip files for testing.
