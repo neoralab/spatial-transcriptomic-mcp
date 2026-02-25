@@ -705,7 +705,7 @@ async def preprocess_data(
             # Clean up any NaN/Inf values that might remain (sparse-matrix safe)
             # Only apply if we have a max_value for clipping
             if params.scale_max_value is not None:
-                if hasattr(adata.X, "data"):
+                if scipy.sparse.issparse(adata.X):
                     # Sparse matrix - only modify the data array
                     adata.X.data = np.nan_to_num(
                         adata.X.data,

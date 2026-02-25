@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import sys
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import numpy as np
 import pytest
+import scipy.sparse as sp
 from anndata import AnnData
 
 from chatspatial.models.data import PreprocessingParameters
@@ -96,6 +98,51 @@ def _install_lightweight_preprocess_mocks(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(preprocessing_mod.sc.pp, "log1p", _no_op)
     monkeypatch.setattr(preprocessing_mod.sc.pp, "highly_variable_genes", _hvg)
     monkeypatch.setattr(preprocessing_mod.sc.pp, "scale", _no_op)
+
+
+def _install_fake_rpy2_for_sct(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    pearson_residuals: np.ndarray,
+    residual_variance: np.ndarray,
+    kept_genes: list[str],
+) -> None:
+    class _Converter:
+        def __add__(self, _other):
+            return self
+
+    @contextmanager
+    def _localconverter(_converter):
+        yield
+
+    def _ro_r(code: str):
+        text = code.strip()
+        if text == "pearson_residuals":
+            return pearson_residuals
+        if text == "residual_variance":
+            return residual_variance
+        if text == "kept_genes":
+            return kept_genes
+        return None
+
+    ro_mod = ModuleType("rpy2.robjects")
+    ro_mod.default_converter = _Converter()
+    ro_mod.globalenv = {}
+    ro_mod.NULL = object()
+    ro_mod.StrVector = lambda vals: list(vals)
+    ro_mod.r = _ro_r
+
+    conversion_mod = ModuleType("rpy2.robjects.conversion")
+    conversion_mod.localconverter = _localconverter
+
+    numpy2ri_mod = ModuleType("rpy2.robjects.numpy2ri")
+    numpy2ri_mod.converter = _Converter()
+
+    rpy2_mod = ModuleType("rpy2")
+    monkeypatch.setitem(sys.modules, "rpy2", rpy2_mod)
+    monkeypatch.setitem(sys.modules, "rpy2.robjects", ro_mod)
+    monkeypatch.setitem(sys.modules, "rpy2.robjects.numpy2ri", numpy2ri_mod)
+    monkeypatch.setitem(sys.modules, "rpy2.robjects.conversion", conversion_mod)
 
 
 @pytest.mark.asyncio
@@ -494,3 +541,508 @@ async def test_preprocess_data_scrublet_warns_when_too_few_cells(
     )
 
     assert any("Scrublet requires at least 100 cells" in w for w in ctx.warnings)
+
+
+@pytest.mark.asyncio
+async def test_preprocess_data_rejects_empty_dataset(monkeypatch: pytest.MonkeyPatch):
+    _install_lightweight_preprocess_mocks(monkeypatch)
+    adata = AnnData(np.zeros((0, 10), dtype=np.float32))
+    ctx = DummyCtx(adata)
+
+    with pytest.raises(DataError, match="Dataset d16 is empty"):
+        await preprocess_data("d16", ctx, PreprocessingParameters(normalization="log"))
+
+
+@pytest.mark.asyncio
+async def test_preprocess_data_qc_failure_is_wrapped(monkeypatch: pytest.MonkeyPatch):
+    _install_lightweight_preprocess_mocks(monkeypatch)
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("qc boom")
+
+    monkeypatch.setattr(preprocessing_mod.sc.pp, "calculate_qc_metrics", _boom)
+    adata = _make_adata(n_obs=12, n_vars=120)
+    ctx = DummyCtx(adata)
+
+    with pytest.raises(ProcessingError, match="QC metrics failed: qc boom"):
+        await preprocess_data("d17", ctx, PreprocessingParameters(normalization="log"))
+
+
+@pytest.mark.asyncio
+async def test_preprocess_data_filters_high_mito_cells(monkeypatch: pytest.MonkeyPatch):
+    _install_lightweight_preprocess_mocks(monkeypatch)
+    adata = _make_adata(n_obs=20, n_vars=120)
+    adata.X[:4, :] = 0.0
+    adata.X[:4, 0] = 2000.0
+    adata.X[4:, 0] = 1.0
+    adata.X[4:, 2:] = 40.0
+    ctx = DummyCtx(adata)
+
+    result = await preprocess_data(
+        "d18",
+        ctx,
+        PreprocessingParameters(
+            normalization="log",
+            filter_mito_pct=20.0,
+            remove_mito_genes=False,
+            filter_genes_min_cells=1,
+            filter_cells_min_genes=1,
+        ),
+    )
+
+    assert result.n_cells == 16
+    assert result.qc_metrics["n_spots_filtered_mito"] == 4
+
+
+@pytest.mark.asyncio
+async def test_preprocess_data_warns_when_mito_filter_has_no_pct_column(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _install_lightweight_preprocess_mocks(monkeypatch)
+
+    def _calc_qc_without_mito_pct(adata, qc_vars=None, percent_top=None, inplace=True):
+        del qc_vars, percent_top, inplace
+        counts = np.asarray(adata.X)
+        adata.obs["n_genes_by_counts"] = (counts > 0).sum(axis=1)
+        adata.obs["total_counts"] = counts.sum(axis=1)
+
+    monkeypatch.setattr(
+        preprocessing_mod.sc.pp, "calculate_qc_metrics", _calc_qc_without_mito_pct
+    )
+
+    adata = _make_adata(n_obs=12, n_vars=120)
+    ctx = DummyCtx(adata)
+
+    await preprocess_data(
+        "d19",
+        ctx,
+        PreprocessingParameters(normalization="log", filter_mito_pct=15.0),
+    )
+
+    assert any("Mitochondrial filtering requested" in w for w in ctx.warnings)
+
+
+@pytest.mark.asyncio
+async def test_preprocess_data_subsample_spots_invokes_scanpy(monkeypatch: pytest.MonkeyPatch):
+    _install_lightweight_preprocess_mocks(monkeypatch)
+    called: dict[str, object] = {}
+
+    def _capture_subsample(adata, n_obs=None, random_state=None):
+        called["n_obs"] = n_obs
+        called["random_state"] = random_state
+        adata._inplace_subset_obs(np.arange(int(n_obs)))
+
+    monkeypatch.setattr(preprocessing_mod.sc.pp, "subsample", _capture_subsample)
+
+    adata = _make_adata(n_obs=18, n_vars=120)
+    ctx = DummyCtx(adata)
+    result = await preprocess_data(
+        "d20",
+        ctx,
+        PreprocessingParameters(
+            normalization="log",
+            subsample_spots=7,
+            subsample_random_seed=123,
+            filter_mito_pct=None,
+        ),
+    )
+
+    assert called["n_obs"] == 7
+    assert called["random_state"] == 123
+    assert result.n_cells == 7
+
+
+@pytest.mark.asyncio
+async def test_preprocess_data_scrublet_detects_and_filters_doublets(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _install_lightweight_preprocess_mocks(monkeypatch)
+
+    def _fake_scrublet(adata, **_kwargs):
+        predicted = np.zeros(adata.n_obs, dtype=bool)
+        predicted[:12] = True
+        adata.obs["predicted_doublet"] = predicted
+        adata.obs["doublet_score"] = np.linspace(0.0, 1.0, adata.n_obs)
+        adata.uns["scrublet"] = {"threshold": 0.33}
+
+    monkeypatch.setattr(preprocessing_mod.sc.pp, "scrublet", _fake_scrublet)
+    adata = _make_adata(n_obs=120, n_vars=120)
+    ctx = DummyCtx(adata)
+
+    result = await preprocess_data(
+        "d21",
+        ctx,
+        PreprocessingParameters(
+            normalization="log",
+            filter_mito_pct=None,
+            use_scrublet=True,
+            scrublet_filter_doublets=True,
+        ),
+    )
+
+    assert result.n_cells == 108
+    assert result.qc_metrics["use_scrublet"] is True
+    assert result.qc_metrics["n_doublets_detected"] == 12
+    assert result.qc_metrics["n_cells_after_doublet_filter"] == 108
+    assert any("removed from dataset" in msg for msg in ctx.infos)
+
+
+@pytest.mark.asyncio
+async def test_preprocess_data_scrublet_detects_and_keeps_doublets(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _install_lightweight_preprocess_mocks(monkeypatch)
+
+    def _fake_scrublet(adata, **_kwargs):
+        predicted = np.zeros(adata.n_obs, dtype=bool)
+        predicted[:5] = True
+        adata.obs["predicted_doublet"] = predicted
+        adata.obs["doublet_score"] = np.linspace(0.1, 0.9, adata.n_obs)
+
+    monkeypatch.setattr(preprocessing_mod.sc.pp, "scrublet", _fake_scrublet)
+    adata = _make_adata(n_obs=120, n_vars=120)
+    ctx = DummyCtx(adata)
+
+    result = await preprocess_data(
+        "d22",
+        ctx,
+        PreprocessingParameters(
+            normalization="log",
+            filter_mito_pct=None,
+            use_scrublet=True,
+            scrublet_filter_doublets=False,
+            scrublet_threshold=0.42,
+        ),
+    )
+
+    assert result.n_cells == 120
+    assert result.qc_metrics["n_doublets_detected"] == 5
+    assert result.qc_metrics["scrublet_threshold"] == pytest.approx(0.42)
+    assert any("kept in dataset" in msg for msg in ctx.infos)
+
+
+@pytest.mark.asyncio
+async def test_preprocess_data_scrublet_failure_records_warning(monkeypatch: pytest.MonkeyPatch):
+    _install_lightweight_preprocess_mocks(monkeypatch)
+    monkeypatch.setattr(
+        preprocessing_mod.sc.pp,
+        "scrublet",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("scrub boom")),
+    )
+
+    adata = _make_adata(n_obs=120, n_vars=120)
+    ctx = DummyCtx(adata)
+    result = await preprocess_data(
+        "d23",
+        ctx,
+        PreprocessingParameters(normalization="log", filter_mito_pct=None, use_scrublet=True),
+    )
+
+    assert result.qc_metrics["use_scrublet"] is False
+    assert "scrub boom" in result.qc_metrics["scrublet_error"]
+    assert any("Scrublet doublet detection failed" in msg for msg in ctx.warnings)
+
+
+@pytest.mark.asyncio
+async def test_preprocess_data_log_normalization_uses_explicit_target_sum(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _install_lightweight_preprocess_mocks(monkeypatch)
+    captured: dict[str, float] = {}
+
+    def _capture_normalize_total(_adata, target_sum=None):
+        captured["target_sum"] = float(target_sum)
+
+    monkeypatch.setattr(preprocessing_mod.sc.pp, "normalize_total", _capture_normalize_total)
+    adata = _make_adata(n_obs=12, n_vars=120)
+    ctx = DummyCtx(adata)
+
+    await preprocess_data(
+        "d24",
+        ctx,
+        PreprocessingParameters(
+            normalization="log",
+            normalize_target_sum=1234.0,
+            filter_mito_pct=None,
+        ),
+    )
+
+    assert captured["target_sum"] == pytest.approx(1234.0)
+
+
+@pytest.mark.asyncio
+async def test_preprocess_data_sct_success_subsets_genes_and_stores_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _install_lightweight_preprocess_mocks(monkeypatch)
+    monkeypatch.setattr(preprocessing_mod, "validate_r_package", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        preprocessing_mod,
+        "sample_expression_values",
+        lambda _adata: np.array([0.0, 1.0, 2.0, 3.0]),
+    )
+
+    adata = _make_adata(n_obs=16, n_vars=120)
+    kept_genes = list(adata.var_names[:110])
+    pearson_residuals = np.full((110, adata.n_obs), 0.25, dtype=np.float32)
+    residual_variance = np.linspace(0.0, 2.0, 110, dtype=np.float32)
+    _install_fake_rpy2_for_sct(
+        monkeypatch,
+        pearson_residuals=pearson_residuals,
+        residual_variance=residual_variance,
+        kept_genes=kept_genes,
+    )
+
+    ctx = DummyCtx(adata)
+    result = await preprocess_data(
+        "d25",
+        ctx,
+        PreprocessingParameters(
+            normalization="sct",
+            filter_mito_pct=None,
+            remove_mito_genes=False,
+        ),
+    )
+
+    assert result.n_genes == 110
+    assert ctx.saved_adata is not None
+    assert ctx.saved_adata.uns["sctransform"]["n_genes_before"] == 120
+    assert ctx.saved_adata.uns["sctransform"]["n_genes_after"] == 110
+    assert "sct_residual_variance" in ctx.saved_adata.var.columns
+
+
+@pytest.mark.asyncio
+async def test_preprocess_data_sct_dimension_mismatch_raises_processing_error(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _install_lightweight_preprocess_mocks(monkeypatch)
+    monkeypatch.setattr(preprocessing_mod, "validate_r_package", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        preprocessing_mod,
+        "sample_expression_values",
+        lambda _adata: np.array([0.0, 1.0, 2.0]),
+    )
+
+    adata = _make_adata(n_obs=10, n_vars=120)
+    kept_genes = list(adata.var_names[:110])
+    _install_fake_rpy2_for_sct(
+        monkeypatch,
+        pearson_residuals=np.ones((110, adata.n_obs), dtype=np.float32),
+        residual_variance=np.ones(100, dtype=np.float32),
+        kept_genes=kept_genes,
+    )
+    ctx = DummyCtx(adata)
+
+    with pytest.raises(ProcessingError, match="Dimension mismatch after SCTransform"):
+        await preprocess_data(
+            "d26",
+            ctx,
+            PreprocessingParameters(normalization="sct", filter_mito_pct=None),
+        )
+
+
+@pytest.mark.asyncio
+async def test_preprocess_data_sct_memory_error_has_actionable_message(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _install_lightweight_preprocess_mocks(monkeypatch)
+    monkeypatch.setattr(preprocessing_mod, "validate_r_package", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        preprocessing_mod,
+        "sample_expression_values",
+        lambda _adata: np.array([0.0, 1.0, 2.0]),
+    )
+    monkeypatch.setattr(
+        preprocessing_mod.scipy.sparse,
+        "csc_matrix",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(MemoryError("oom")),
+    )
+
+    adata = _make_adata(n_obs=12, n_vars=120)
+    ctx = DummyCtx(adata)
+    with pytest.raises(MemoryError, match="Memory error for SCTransform"):
+        await preprocess_data(
+            "d27",
+            ctx,
+            PreprocessingParameters(normalization="sct", filter_mito_pct=None),
+        )
+
+
+@pytest.mark.asyncio
+async def test_preprocess_data_pearson_residuals_memory_error_has_guidance(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _install_lightweight_preprocess_mocks(monkeypatch)
+    monkeypatch.setattr(
+        preprocessing_mod.sc,
+        "experimental",
+        SimpleNamespace(
+            pp=SimpleNamespace(
+                normalize_pearson_residuals=lambda _adata: (_ for _ in ()).throw(
+                    MemoryError("oom")
+                )
+            )
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        preprocessing_mod,
+        "sample_expression_values",
+        lambda _adata: np.array([0.0, 1.0, 2.0]),
+    )
+
+    adata = _make_adata(n_obs=12, n_vars=120)
+    ctx = DummyCtx(adata)
+    with pytest.raises(MemoryError, match="Insufficient memory for Pearson residuals"):
+        await preprocess_data(
+            "d28",
+            ctx,
+            PreprocessingParameters(normalization="pearson_residuals", filter_mito_pct=None),
+        )
+
+
+@pytest.mark.asyncio
+async def test_preprocess_data_pearson_residuals_runtime_error_is_wrapped(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _install_lightweight_preprocess_mocks(monkeypatch)
+    monkeypatch.setattr(
+        preprocessing_mod.sc,
+        "experimental",
+        SimpleNamespace(
+            pp=SimpleNamespace(
+                normalize_pearson_residuals=lambda _adata: (_ for _ in ()).throw(
+                    RuntimeError("pearson boom")
+                )
+            )
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        preprocessing_mod,
+        "sample_expression_values",
+        lambda _adata: np.array([0.0, 1.0, 2.0]),
+    )
+
+    adata = _make_adata(n_obs=12, n_vars=120)
+    ctx = DummyCtx(adata)
+    with pytest.raises(
+        ProcessingError,
+        match="Pearson residuals normalization failed: pearson boom",
+    ):
+        await preprocess_data(
+            "d29",
+            ctx,
+            PreprocessingParameters(normalization="pearson_residuals", filter_mito_pct=None),
+        )
+
+
+@pytest.mark.asyncio
+async def test_preprocess_data_scvi_rejects_negative_values(monkeypatch: pytest.MonkeyPatch):
+    _install_lightweight_preprocess_mocks(monkeypatch)
+    monkeypatch.setattr(preprocessing_mod, "require", lambda *_args, **_kwargs: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "scvi",
+        SimpleNamespace(model=SimpleNamespace(SCVI=object)),
+    )
+    monkeypatch.setattr(
+        preprocessing_mod,
+        "sample_expression_values",
+        lambda _adata: np.array([1.0, -0.5, 2.0]),
+    )
+
+    adata = _make_adata(n_obs=12, n_vars=120)
+    ctx = DummyCtx(adata)
+    with pytest.raises(DataError, match="requires non-negative count data"):
+        await preprocess_data(
+            "d30",
+            ctx,
+            PreprocessingParameters(normalization="scvi", filter_mito_pct=None),
+        )
+
+
+@pytest.mark.asyncio
+async def test_preprocess_data_scale_dense_cleans_nan_and_inf(monkeypatch: pytest.MonkeyPatch):
+    _install_lightweight_preprocess_mocks(monkeypatch)
+
+    def _inject_dense_scale(adata, max_value=None):
+        del max_value
+        adata.X = np.array(
+            [[np.nan, np.inf, -np.inf], [1.0, -2.0, 3.0]], dtype=np.float32
+        )
+
+    monkeypatch.setattr(preprocessing_mod.sc.pp, "scale", _inject_dense_scale)
+    adata = _make_adata(n_obs=2, n_vars=3)
+    ctx = DummyCtx(adata)
+    result = await preprocess_data(
+        "d31",
+        ctx,
+        PreprocessingParameters(
+            normalization="log",
+            filter_mito_pct=None,
+            scale=True,
+            scale_max_value=5.0,
+            n_hvgs=2,
+        ),
+    )
+
+    assert result.n_cells == 2
+    assert ctx.saved_adata is not None
+    assert np.isfinite(ctx.saved_adata.X).all()
+    assert np.max(ctx.saved_adata.X) <= 5.0
+    assert np.min(ctx.saved_adata.X) >= -5.0
+
+
+@pytest.mark.asyncio
+async def test_preprocess_data_scale_sparse_cleans_nan_and_inf(monkeypatch: pytest.MonkeyPatch):
+    _install_lightweight_preprocess_mocks(monkeypatch)
+
+    def _inject_sparse_scale(adata, max_value=None):
+        del max_value
+        mat = sp.csr_matrix(np.array([[1.0, 0.0], [0.0, 2.0]], dtype=np.float32))
+        mat.data = np.array([np.nan, np.inf], dtype=np.float32)
+        adata.X = mat
+
+    monkeypatch.setattr(preprocessing_mod.sc.pp, "scale", _inject_sparse_scale)
+    adata = _make_adata(n_obs=2, n_vars=2)
+    ctx = DummyCtx(adata)
+    await preprocess_data(
+        "d32",
+        ctx,
+        PreprocessingParameters(
+            normalization="log",
+            filter_mito_pct=None,
+            scale=True,
+            scale_max_value=4.0,
+            n_hvgs=1,
+        ),
+    )
+
+    assert ctx.saved_adata is not None
+    assert sp.issparse(ctx.saved_adata.X)
+    assert np.isfinite(ctx.saved_adata.X.data).all()
+    assert np.max(ctx.saved_adata.X.data) <= 4.0
+
+
+@pytest.mark.asyncio
+async def test_preprocess_data_scale_failure_warns_and_continues(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _install_lightweight_preprocess_mocks(monkeypatch)
+    monkeypatch.setattr(
+        preprocessing_mod.sc.pp,
+        "scale",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("scale boom")),
+    )
+
+    adata = _make_adata(n_obs=12, n_vars=120)
+    ctx = DummyCtx(adata)
+    result = await preprocess_data(
+        "d33",
+        ctx,
+        PreprocessingParameters(normalization="log", filter_mito_pct=None, scale=True),
+    )
+
+    assert result.n_cells == 12
+    assert any("Scaling failed: scale boom" in msg for msg in ctx.warnings)
