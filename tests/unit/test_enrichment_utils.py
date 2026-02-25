@@ -537,7 +537,7 @@ def test_perform_enrichr_uses_default_libraries_and_handles_missing_optional_col
     )
 
     assert isinstance(captured["gene_sets"], list)
-    assert "GO_Biological_Process_2023" in captured["gene_sets"]
+    assert "GO_Biological_Process_2025" in captured["gene_sets"]
     assert out.n_gene_sets == 1
     assert out.gene_set_statistics["Term_A"]["z_score"] != float("inf")
     assert out.gene_set_statistics["Term_A"]["odds_ratio"] == 1.0
@@ -582,7 +582,6 @@ async def test_analyze_enrichment_dispatches_to_ssgsea(
 
 
 def test_load_msigdb_hallmark_filters_by_size(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(enrichment_module.gp, "get_library_name", lambda organism: ["MSigDB_Hallmark_2020"], raising=False)
     monkeypatch.setattr(
         enrichment_module.gp,
         "get_library",
@@ -616,7 +615,7 @@ def test_load_go_gene_sets_calls_gseapy_with_expected_library(monkeypatch: pytes
     out = enrichment_module.load_go_gene_sets("mouse", aspect="BP", min_size=2, max_size=10)
 
     assert out == {"go_ok": ["A", "B", "C"]}
-    assert captured["name"] == "GO_Biological_Process_2023"
+    assert captured["name"] == "GO_Biological_Process_2025"
     assert captured["organism"] == "Mus musculus"
 
 
@@ -655,7 +654,7 @@ def test_load_reactome_and_cell_marker_gene_sets(monkeypatch: pytest.MonkeyPatch
 
     assert reactome == {"ok": ["A", "B", "C"]}
     assert cellm == {"ok": ["A", "B", "C"]}
-    assert calls[0] == ("Reactome_2022", "Homo sapiens")
+    assert calls[0] == ("Reactome_Pathways_2024", "Homo sapiens")
     assert calls[1] == ("CellMarker_Augmented_2021", "Mus musculus")
 
 
