@@ -141,3 +141,65 @@ async def test_analyze_enrichment_saves_result_with_expected_key(
     assert saved["data_id"] == "d5"
     assert saved["result_type"] == "enrichment"
     assert saved["result"] is result
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_analyze_spatial_statistics_materializes_default_params(
+    reset_data_manager, monkeypatch: pytest.MonkeyPatch
+):
+    async def fake_analyze(data_id, ctx, params):
+        assert isinstance(params, SpatialStatisticsParameters)
+        return SpatialStatisticsResult(
+            data_id=data_id,
+            analysis_type=params.analysis_type,
+            n_features_analyzed=0,
+            n_significant=0,
+            top_features=[],
+            summary_metrics={},
+            results_key="spatial_stats_default",
+        )
+
+    fake_module = SimpleNamespace(analyze_spatial_statistics=fake_analyze)
+    monkeypatch.setitem(sys.modules, "chatspatial.tools.spatial_statistics", fake_module)
+
+    async def fake_save_result(data_id: str, result_type: str, result):
+        return None
+
+    monkeypatch.setattr(data_manager, "save_result", fake_save_result)
+
+    out = await analyze_spatial_statistics("d_defaults")
+    assert isinstance(out, SpatialStatisticsResult)
+    assert out.analysis_type == "neighborhood"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_integrate_samples_materializes_default_params(
+    reset_data_manager, monkeypatch: pytest.MonkeyPatch
+):
+    async def fake_integrate(data_ids, ctx, params):
+        assert isinstance(params, IntegrationParameters)
+        return IntegrationResult(
+            data_id="integrated_defaults",
+            n_samples=len(data_ids),
+            integration_method=params.method,
+        )
+
+    fake_module = SimpleNamespace(integrate_samples=fake_integrate)
+    monkeypatch.setitem(sys.modules, "chatspatial.tools.integration", fake_module)
+
+    saved: dict[str, object] = {}
+
+    async def fake_save_result(data_id: str, result_type: str, result):
+        saved["data_id"] = data_id
+        saved["result_type"] = result_type
+        saved["result"] = result
+
+    monkeypatch.setattr(data_manager, "save_result", fake_save_result)
+
+    out = await integrate_samples(["d1", "d2"])
+    assert isinstance(out, IntegrationResult)
+    assert out.integration_method == "harmony"
+    assert saved["data_id"] == "integrated_defaults"
+    assert saved["result_type"] == "integration"

@@ -19,6 +19,7 @@ from ..utils.adata_utils import (
     ensure_unique_var_names,
     find_common_genes,
     get_spatial_key,
+    shallow_copy_adata,
     store_analysis_metadata,
 )
 from ..utils.dependency_manager import require
@@ -87,20 +88,19 @@ def _prepare_stalign_image(
     """
     import torch
 
-    # Normalize coordinates to image space with padding
-    coords_norm = coords.copy()
+    coords = np.asarray(coords)
+    intensity = np.asarray(intensity, dtype=np.float32)
     padding = 0.1
 
-    for dim in range(2):
-        cmin, cmax = coords[:, dim].min(), coords[:, dim].max()
-        crange = cmax - cmin
-        if crange > 0:
-            target_min = padding * image_size[dim]
-            target_max = (1 - padding) * image_size[dim]
-            coords_norm[:, dim] = (coords[:, dim] - cmin) / crange
-            coords_norm[:, dim] = (
-                coords_norm[:, dim] * (target_max - target_min) + target_min
-            )
+    def _to_image_indices(values: np.ndarray, size: int) -> np.ndarray:
+        values = np.asarray(values, dtype=np.float32)
+        vmin, vmax = values.min(), values.max()
+        vrange = vmax - vmin
+        if vrange > 0:
+            target_min = padding * size
+            target_max = (1 - padding) * size
+            values = ((values - vmin) / vrange) * (target_max - target_min) + target_min
+        return np.clip(values.astype(np.int32, copy=False), 0, size - 1)
 
     # Create coordinate grid
     xgrid = [
@@ -112,8 +112,8 @@ def _prepare_stalign_image(
     from scipy.ndimage import gaussian_filter
 
     # Vectorized coordinate mapping
-    x_indices = np.clip(coords_norm[:, 1].astype(int), 0, image_size[0] - 1)
-    y_indices = np.clip(coords_norm[:, 0].astype(int), 0, image_size[1] - 1)
+    x_indices = _to_image_indices(coords[:, 1], image_size[0])
+    y_indices = _to_image_indices(coords[:, 0], image_size[1])
 
     # Accumulate intensities (np.add.at handles duplicate indices correctly)
     image = np.zeros(image_size, dtype=np.float32)
@@ -141,13 +141,15 @@ def _register_paste(
 ) -> list["ad.AnnData"]:
     """Register slices using PASTE optimal transport."""
     import paste as pst
-    import scanpy as sc
 
     reference_idx = params.reference_idx or 0
-    registered = [adata.copy() for adata in adata_list]
+    # Memory optimization: keep lightweight working copies and avoid duplicating X.
+    registered = [shallow_copy_adata(adata) for adata in adata_list]
     common_genes = _get_common_genes(registered)
 
     if len(registered) == 2:
+        import scanpy as sc
+
         # Pairwise alignment
 
         slice1 = registered[0][:, common_genes].copy()
@@ -236,12 +238,13 @@ def _register_stalign(
             f"Use PASTE for multi-slice alignment."
         )
 
-    registered = [adata.copy() for adata in adata_list]
+    # Memory optimization: keep lightweight working copies and avoid duplicating X.
+    registered = [shallow_copy_adata(adata) for adata in adata_list]
     source, target = registered[0], registered[1]
 
     # Prepare coordinates
-    source_coords = source.obsm[spatial_key].astype(np.float32)
-    target_coords = target.obsm[spatial_key].astype(np.float32)
+    source_coords = np.asarray(source.obsm[spatial_key], dtype=np.float32)
+    target_coords = np.asarray(target.obsm[spatial_key], dtype=np.float32)
 
     # Prepare intensity
     if params.stalign_use_expression:
@@ -313,10 +316,15 @@ def _register_stalign(
         transformed = ST.transform_points_source_to_target(xv, v, A, source_points)
 
         if isinstance(transformed, torch.Tensor):
-            transformed = transformed.numpy()
+            if hasattr(transformed, "detach"):
+                transformed = transformed.detach()
+            if hasattr(transformed, "cpu"):
+                transformed = transformed.cpu()
+            if hasattr(transformed, "numpy"):
+                transformed = transformed.numpy()
 
-        source.obsm["spatial_registered"] = transformed
-        target.obsm["spatial_registered"] = target_coords.copy()
+        source.obsm["spatial_registered"] = np.asarray(transformed, dtype=np.float32)
+        target.obsm["spatial_registered"] = np.array(target_coords, copy=True)
 
     except Exception as e:
         raise ProcessingError(
@@ -331,13 +339,12 @@ def _transform_coordinates(
     reference_coords: np.ndarray,
 ) -> np.ndarray:
     """Transform coordinates via optimal transport matrix."""
-    # Normalize rows
+    # Equivalent to (transport_matrix / row_sums) @ reference_coords, but avoids
+    # materializing a large normalized matrix in memory.
     row_sums = transport_matrix.sum(axis=1, keepdims=True)
     row_sums[row_sums == 0] = 1  # Avoid division by zero
-    normalized = transport_matrix / row_sums
-
-    # Weighted average of reference coordinates
-    return normalized @ reference_coords
+    weighted = transport_matrix @ reference_coords
+    return weighted / row_sums
 
 
 # =============================================================================

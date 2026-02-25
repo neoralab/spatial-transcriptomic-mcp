@@ -248,11 +248,12 @@ async def preprocess_data(
             uns={},  # Empty dict - raw doesn't need uns metadata
         )
 
-    # Store counts layer for scVI-tools compatibility (Cell2location, scANVI, DestVI)
-    # Note: This layer follows adata through HVG subsetting, complementing adata.raw
-    # - adata.raw: Full gene set (for cell communication needing complete L-R coverage)
-    # - adata.layers["counts"]: HVG subset after filtering (for scVI-tools alignment)
-    adata.layers["counts"] = adata.X.copy()
+    # Store counts layer for scVI-tools compatibility (Cell2location, scANVI, DestVI).
+    # Prefer reusing adata.raw.X when dimensions match to avoid another full-matrix copy.
+    if adata.raw is not None and adata.raw.shape == adata.shape:
+        adata.layers["counts"] = adata.raw.X
+    else:
+        adata.layers["counts"] = adata.X.copy()
 
     # Store preprocessing metadata following scanpy/anndata conventions
     # This metadata enables downstream tools to reuse gene annotations
@@ -464,11 +465,14 @@ async def preprocess_data(
 
             # Select top N genes by residual variance
             n_hvg = min(params.sct_var_features_n, len(residual_variance))
-            top_hvg_indices = np.argsort(residual_variance)[-n_hvg:]
             adata.var["highly_variable"] = False
-            adata.var.iloc[
-                top_hvg_indices, adata.var.columns.get_loc("highly_variable")
-            ] = True
+            if n_hvg >= len(residual_variance):
+                adata.var["highly_variable"] = True
+            elif n_hvg > 0:
+                top_hvg_indices = np.argpartition(residual_variance, -n_hvg)[-n_hvg:]
+                adata.var.iloc[
+                    top_hvg_indices, adata.var.columns.get_loc("highly_variable")
+                ] = True
 
         except MemoryError as e:
             raise MemoryError(
@@ -629,13 +633,41 @@ async def preprocess_data(
         )
 
     # 4. Find highly variable genes and apply gene subsampling
-    # Determine number of HVGs to select
-    if gene_subsample_requested:
-        # User wants to subsample genes
-        n_hvgs = min(params.subsample_genes, adata.n_vars - 1, params.n_hvgs)
+    # For SCTransform, preserve its residual-variance-based HVG selection.
+    use_existing_sct_hvgs = (
+        params.normalization == "sct" and "highly_variable" in adata.var.columns
+    )
+    if use_existing_sct_hvgs:
+        current_hvg_mask = adata.var["highly_variable"].to_numpy(dtype=bool)
+        current_hvg_count = int(current_hvg_mask.sum())
+
+        if gene_subsample_requested:
+            n_hvgs = min(params.subsample_genes, current_hvg_count)
+        else:
+            n_hvgs = current_hvg_count
+
+        # If user requested fewer genes, trim using SCTransform residual variance.
+        if 0 < n_hvgs < current_hvg_count:
+            selected_idx = np.flatnonzero(current_hvg_mask)
+            if "sct_residual_variance" in adata.var.columns:
+                residual_var = adata.var["sct_residual_variance"].to_numpy()
+                selected_scores = residual_var[selected_idx]
+                top_local = np.argpartition(selected_scores, -n_hvgs)[-n_hvgs:]
+                selected_idx = selected_idx[top_local]
+            else:
+                selected_idx = selected_idx[:n_hvgs]
+
+            new_mask = np.zeros(adata.n_vars, dtype=bool)
+            new_mask[selected_idx] = True
+            adata.var["highly_variable"] = new_mask
     else:
-        # Use standard HVG selection
-        n_hvgs = min(params.n_hvgs, adata.n_vars - 1)
+        # Determine number of HVGs to select
+        if gene_subsample_requested:
+            # User wants to subsample genes
+            n_hvgs = min(params.subsample_genes, adata.n_vars - 1, params.n_hvgs)
+        else:
+            # Use standard HVG selection
+            n_hvgs = min(params.n_hvgs, adata.n_vars - 1)
 
     # Statistical warning: Very low HVG count may lead to unstable clustering
     # Based on literature consensus: 500-5000 genes recommended, 1000-2000 typical
@@ -651,18 +683,19 @@ async def preprocess_data(
             f"   • Current dataset: {adata.n_obs} cells × {adata.n_vars} total genes"
         )
 
-    # Check if we should use all genes (for very small gene sets like MERFISH)
-    if adata.n_vars < 100:
-        adata.var["highly_variable"] = True
-    else:
-        # Attempt HVG selection - no fallback for failures
-        try:
-            sc.pp.highly_variable_genes(adata, n_top_genes=n_hvgs)
-        except Exception as e:
-            raise ProcessingError(
-                f"HVG selection failed: {e}. "
-                f"Data: {adata.n_obs}×{adata.n_vars}, requested: {n_hvgs} HVGs."
-            ) from e
+    if not use_existing_sct_hvgs:
+        # Check if we should use all genes (for very small gene sets like MERFISH)
+        if adata.n_vars < 100:
+            adata.var["highly_variable"] = True
+        else:
+            # Attempt HVG selection - no fallback for failures
+            try:
+                sc.pp.highly_variable_genes(adata, n_top_genes=n_hvgs)
+            except Exception as e:
+                raise ProcessingError(
+                    f"HVG selection failed: {e}. "
+                    f"Data: {adata.n_obs}×{adata.n_vars}, requested: {n_hvgs} HVGs."
+                ) from e
 
     # Exclude mitochondrial genes from HVG selection (BEST PRACTICE)
     # Mito genes can dominate HVG due to high expression and technical variation

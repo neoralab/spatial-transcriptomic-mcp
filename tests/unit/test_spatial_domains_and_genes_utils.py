@@ -18,12 +18,16 @@ class DummyCtx:
     def __init__(self, adata):
         self.adata = adata
         self.warnings: list[str] = []
+        self.debug_logs: list[str] = []
 
     async def get_adata(self, _data_id: str):
         return self.adata
 
     async def warning(self, msg: str):
         self.warnings.append(msg)
+
+    def debug(self, msg: str):
+        self.debug_logs.append(msg)
 
 
 def test_calculate_sparse_gene_stats_handles_dense_and_sparse_equivalently(
@@ -37,6 +41,19 @@ def test_calculate_sparse_gene_stats_handles_dense_and_sparse_equivalently(
 
     np.testing.assert_allclose(dense_totals, sparse_totals)
     np.testing.assert_array_equal(dense_expr, sparse_expr)
+
+
+def test_top_n_indices_returns_descending_and_handles_bounds():
+    values = np.array([1.0, 7.0, 4.0, 7.5], dtype=float)
+
+    top2 = sg._top_n_indices(values, 2)
+    assert list(top2) == [3, 1]
+
+    top_all = sg._top_n_indices(values, 10)
+    assert list(top_all) == [3, 1, 2, 0]
+
+    top_zero = sg._top_n_indices(values, 0)
+    assert top_zero.size == 0
 
 
 def test_refine_spatial_domains_returns_same_length_series(minimal_spatial_adata):
@@ -582,6 +599,60 @@ async def test_identify_domains_stagate_success_returns_embeddings_and_stats(
     assert stats["method"] == "stagate_pyg"
     assert stats["target_n_clusters"] == 3
     assert stats["rad_cutoff"] == 40
+
+
+@pytest.mark.asyncio
+async def test_identify_domains_stagate_stats_failure_logs_debug_and_continues(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    import sys
+    import types
+
+    adata = minimal_spatial_adata.copy()
+    ctx = DummyCtx(adata)
+
+    torch_mod = types.ModuleType("torch")
+    torch_mod.__version__ = "2.8.0"
+    torch_mod.device = lambda x: f"device:{x}"
+    sys.modules["torch"] = torch_mod
+
+    class _FakeSTAGATE:
+        @staticmethod
+        def Cal_Spatial_Net(a, rad_cutoff=50):
+            a.uns["rad_cutoff"] = rad_cutoff
+
+        @staticmethod
+        def Stats_Spatial_Net(_a):
+            raise RuntimeError("stats boom")
+
+        @staticmethod
+        def train_STAGATE(a, device=None):
+            del device
+            a.obsm["STAGATE"] = np.ones((a.n_obs, 2), dtype=float)
+            return a
+
+    monkeypatch.setattr(sd, "require", lambda *_a, **_k: _FakeSTAGATE)
+    monkeypatch.setattr(
+        "chatspatial.utils.compute.gmm_clustering",
+        lambda data, n_clusters, **_kwargs: np.arange(data.shape[0]) % n_clusters,
+    )
+
+    async def _fake_resolve_device(prefer_gpu: bool, ctx):
+        del prefer_gpu, ctx
+        return "cpu"
+
+    monkeypatch.setattr(sd, "resolve_device_async", _fake_resolve_device)
+
+    labels, emb_key, stats = await sd._identify_domains_stagate(
+        adata,
+        SpatialDomainParameters(method="stagate", n_domains=2, stagate_use_gpu=False),
+        ctx,
+    )
+
+    assert len(labels) == adata.n_obs
+    assert emb_key == "STAGATE"
+    assert stats["method"] == "stagate_pyg"
+    assert any("stats boom" in msg for msg in ctx.debug_logs)
 
 
 @pytest.mark.asyncio

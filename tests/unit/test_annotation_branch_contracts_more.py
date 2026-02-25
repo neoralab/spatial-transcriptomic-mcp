@@ -1102,7 +1102,7 @@ async def test_tangram_uses_marker_genes_when_training_genes_not_given(
         reference_adata=ref,
     )
 
-    assert set(seen["genes"]) == {"gene_0", "gene_1", "gene_2"}
+    assert seen["genes"] == ["gene_0", "gene_1", "gene_2"]
 
 
 @pytest.mark.asyncio

@@ -79,6 +79,20 @@ async def test_data_manager_create_dataset_filters_reserved_metadata(minimal_spa
     assert stored["name"] == "derived-data"
     assert stored["source"] == "integration"
     assert "results" not in stored
+    assert stored["type"] == "unknown"
+    assert stored["n_cells"] == minimal_spatial_adata.n_obs
+    assert stored["n_genes"] == minimal_spatial_adata.n_vars
+
+    listed = await manager.list_datasets()
+    assert listed == [
+        {
+            "id": data_id,
+            "name": "derived-data",
+            "type": "unknown",
+            "n_cells": minimal_spatial_adata.n_obs,
+            "n_genes": minimal_spatial_adata.n_vars,
+        }
+    ]
 
 
 def test_tool_context_debug_and_log_config_delegate_to_logger():

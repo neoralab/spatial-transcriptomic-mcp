@@ -321,6 +321,9 @@ async def test_run_pydeseq2_success_auto_group_selection_and_persistence(
     assert captured["method"] == "pydeseq2"
     assert captured["statistics"]["n_pseudobulk_samples"] == 4
     assert captured["contrast"] == ["condition", "A", "B"]
+    assert "pydeseq2_results" in adata.uns
+    assert "_de_condition" not in adata.obs.columns
+    assert "_pseudobulk_id" not in adata.obs.columns
 
 
 @pytest.mark.asyncio
@@ -722,6 +725,8 @@ async def test_run_pydeseq2_group1_vs_rest_path(
 
     assert out.comparison == "A vs rest"
     assert captured["contrast"] == ["condition", "A", "rest"]
+    assert "_de_condition" not in adata.obs.columns
+    assert "_pseudobulk_id" not in adata.obs.columns
 
 
 @pytest.mark.asyncio

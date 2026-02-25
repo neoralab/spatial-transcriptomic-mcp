@@ -705,6 +705,44 @@ async def test_prepare_velovi_data_requires_spliced_and_unspliced_layers(
         await vel._prepare_velovi_data(adata, ctx=None)
 
 
+@pytest.mark.asyncio
+async def test_prepare_velovi_data_keeps_input_unmodified_and_builds_independent_workspace(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    adata.layers["spliced"] = np.ones((adata.n_obs, adata.n_vars), dtype=np.float32)
+    adata.layers["unspliced"] = np.ones((adata.n_obs, adata.n_vars), dtype=np.float32) * 2
+    spliced_before = adata.layers["spliced"].copy()
+    unspliced_before = adata.layers["unspliced"].copy()
+
+    def _fake_filter_and_normalize(adata_obj, **_kwargs):
+        adata_obj.X[0, 0] = 999.0
+
+    def _fake_moments(adata_obj, **_kwargs):
+        adata_obj.obsp["connectivities"] = np.eye(adata_obj.n_obs, dtype=np.float32)
+
+    fake_scv = ModuleType("scvelo")
+    fake_scv.pp = SimpleNamespace(
+        filter_and_normalize=_fake_filter_and_normalize,
+        moments=_fake_moments,
+    )
+    monkeypatch.setitem(__import__("sys").modules, "scvelo", fake_scv)
+
+    out = await vel._prepare_velovi_data(adata, ctx=None)
+
+    # Working object is independent.
+    assert out is not adata
+    assert out.layers["spliced"] is not adata.layers["spliced"]
+    assert out.layers["unspliced"] is not adata.layers["unspliced"]
+    assert "Ms" in out.layers and "Mu" in out.layers
+
+    # Input adata remains unchanged by working-copy preprocessing.
+    np.testing.assert_allclose(adata.layers["spliced"], spliced_before)
+    np.testing.assert_allclose(adata.layers["unspliced"], unspliced_before)
+    assert "Ms" not in adata.layers
+    assert "Mu" not in adata.layers
+
+
 def test_validate_velovi_data_rejects_non_2d_layers():
     adata = SimpleNamespace(layers={"Ms": np.ones(5), "Mu": np.ones(5)})
     with pytest.raises(DataError, match="Expected 2D arrays"):

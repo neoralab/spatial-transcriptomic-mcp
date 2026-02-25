@@ -13,7 +13,7 @@ from typing import Any, Optional
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
 
-from .utils.exceptions import DataNotFoundError, ParameterError
+from .utils.exceptions import DataNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -193,6 +193,69 @@ class DefaultSpatialDataManager:
         self.data_store: dict[str, Any] = {}
         self._id_counter = itertools.count(1)
 
+    @staticmethod
+    def _has_tissue_image(uns: Any) -> bool:
+        """Best-effort check for Visium-like tissue images in adata.uns."""
+        try:
+            spatial = uns.get("spatial") if hasattr(uns, "get") else None
+            if not isinstance(spatial, dict):
+                return False
+            for sample_data in spatial.values():
+                if not isinstance(sample_data, dict):
+                    continue
+                images = sample_data.get("images")
+                if isinstance(images, dict) and (
+                    "hires" in images or "lowres" in images
+                ):
+                    return True
+            return False
+        except Exception:
+            return False
+
+    def _sync_dataset_metadata(
+        self, dataset_info: dict[str, Any], data_id: Optional[str] = None
+    ) -> None:
+        """Keep lightweight metadata synchronized with the current adata object."""
+        if data_id is not None:
+            dataset_info.setdefault("name", f"Dataset {data_id}")
+        dataset_info.setdefault("type", "unknown")
+
+        adata = dataset_info.get("adata")
+        n_obs = getattr(adata, "n_obs", None)
+        n_vars = getattr(adata, "n_vars", None)
+        dataset_info["n_cells"] = int(n_obs) if isinstance(n_obs, int) else 0
+        dataset_info["n_genes"] = int(n_vars) if isinstance(n_vars, int) else 0
+
+        obsm = getattr(adata, "obsm", None)
+        if obsm is not None:
+            try:
+                dataset_info["obsm_keys"] = list(obsm.keys())
+            except Exception:
+                dataset_info.setdefault("obsm_keys", [])
+            try:
+                has_spatial = (
+                    "spatial" in obsm
+                    and obsm["spatial"] is not None
+                    and len(obsm["spatial"]) > 0
+                )
+                dataset_info["spatial_coordinates_available"] = bool(has_spatial)
+            except Exception:
+                dataset_info.setdefault("spatial_coordinates_available", False)
+        else:
+            dataset_info.setdefault("obsm_keys", [])
+            dataset_info.setdefault("spatial_coordinates_available", False)
+
+        uns = getattr(adata, "uns", None)
+        if uns is not None:
+            try:
+                dataset_info["uns_keys"] = list(uns.keys())
+            except Exception:
+                dataset_info.setdefault("uns_keys", [])
+            dataset_info["tissue_image_available"] = self._has_tissue_image(uns)
+        else:
+            dataset_info.setdefault("uns_keys", [])
+            dataset_info.setdefault("tissue_image_available", False)
+
     async def load_dataset(
         self, path: str, data_type: str, name: Optional[str] = None
     ) -> str:
@@ -212,6 +275,7 @@ class DefaultSpatialDataManager:
 
         # Store data
         self.data_store[data_id] = dataset_info
+        self._sync_dataset_metadata(dataset_info, data_id)
 
         return data_id
 
@@ -219,20 +283,25 @@ class DefaultSpatialDataManager:
         """Get a dataset by ID"""
         if data_id not in self.data_store:
             raise DataNotFoundError(f"Dataset {data_id} not found")
-        return self.data_store[data_id]
+        dataset_info = self.data_store[data_id]
+        self._sync_dataset_metadata(dataset_info, data_id)
+        return dataset_info
 
     async def list_datasets(self) -> list[dict[str, Any]]:
         """List all loaded datasets"""
-        return [
-            {
-                "id": data_id,
-                "name": info.get("name", f"Dataset {data_id}"),
-                "type": info.get("type", "unknown"),
-                "n_cells": info.get("n_cells", 0),
-                "n_genes": info.get("n_genes", 0),
-            }
-            for data_id, info in self.data_store.items()
-        ]
+        listed: list[dict[str, Any]] = []
+        for data_id, info in self.data_store.items():
+            self._sync_dataset_metadata(info, data_id)
+            listed.append(
+                {
+                    "id": data_id,
+                    "name": info.get("name", f"Dataset {data_id}"),
+                    "type": info.get("type", "unknown"),
+                    "n_cells": info.get("n_cells", 0),
+                    "n_genes": info.get("n_genes", 0),
+                }
+            )
+        return listed
 
     async def save_result(self, data_id: str, result_type: str, result: Any) -> None:
         """Save analysis results"""
@@ -284,6 +353,7 @@ class DefaultSpatialDataManager:
         if data_id not in self.data_store:
             raise DataNotFoundError(f"Dataset {data_id} not found")
         self.data_store[data_id]["adata"] = adata
+        self._sync_dataset_metadata(self.data_store[data_id], data_id)
 
     async def create_dataset(
         self,
@@ -308,13 +378,16 @@ class DefaultSpatialDataManager:
             The generated dataset ID
         """
         data_id = f"{prefix}_{next(self._id_counter)}"
-        dataset_info: dict[str, Any] = {"adata": adata}
-        if name:
-            dataset_info["name"] = name
+        dataset_info: dict[str, Any] = {
+            "adata": adata,
+            "name": name or f"Dataset {data_id}",
+            "type": "unknown",
+        }
         if metadata:
             _RESERVED_KEYS = {"adata", "name", "results"}
             safe = {k: v for k, v in metadata.items() if k not in _RESERVED_KEYS}
             dataset_info.update(safe)
+        self._sync_dataset_metadata(dataset_info, data_id)
         self.data_store[data_id] = dataset_info
         return data_id
 

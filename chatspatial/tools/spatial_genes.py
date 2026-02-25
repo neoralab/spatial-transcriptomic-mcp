@@ -74,6 +74,15 @@ def _calculate_sparse_gene_stats(X) -> tuple[np.ndarray, np.ndarray]:
     return gene_totals, n_expressed
 
 
+def _top_n_indices(values: np.ndarray, n_top: int) -> np.ndarray:
+    """Return indices of top-n values in descending order."""
+    if n_top <= 0 or values.size == 0:
+        return np.array([], dtype=int)
+    n = min(n_top, values.size)
+    top_idx = np.argpartition(values, -n)[-n:]
+    return top_idx[np.argsort(values[top_idx])[::-1]]
+
+
 async def identify_spatial_genes(
     data_id: str,
     ctx: "ToolContext",
@@ -245,14 +254,12 @@ async def _identify_spatial_genes_spatialde(
             else:
                 # Not enough HVGs, select by expression
                 gene_totals_filtered = gene_totals[keep_genes_mask]
-                top_indices = np.argsort(gene_totals_filtered)[-params.n_top_genes :][
-                    ::-1
-                ]
+                top_indices = _top_n_indices(gene_totals_filtered, params.n_top_genes)
                 final_genes = selected_var_names[top_indices]
         else:
             # Select by expression
             gene_totals_filtered = gene_totals[keep_genes_mask]
-            top_indices = np.argsort(gene_totals_filtered)[-params.n_top_genes :][::-1]
+            top_indices = _top_n_indices(gene_totals_filtered, params.n_top_genes)
             final_genes = selected_var_names[top_indices]
 
     # Step 3: Slice sparse matrix to final genes, THEN convert to dense

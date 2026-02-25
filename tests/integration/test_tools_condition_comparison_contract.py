@@ -74,8 +74,12 @@ async def test_compare_conditions_uses_global_branch_and_returns_contract(
     monkeypatch.setattr(cc_module, "check_is_integer_counts", lambda X: (True, None, None))
 
     async def fake_run_global(*args, **kwargs):
+        data_id = kwargs.get("data_id", "")
+        n_samples_condition1 = kwargs.get("n_samples_condition1", 0)
+        n_samples_condition2 = kwargs.get("n_samples_condition2", 0)
+        results_key = kwargs.get("results_key", "")
         return ConditionComparisonResult(
-            data_id="",
+            data_id=data_id,
             method="pseudobulk",
             comparison="treated vs control",
             condition_key="condition",
@@ -83,13 +87,13 @@ async def test_compare_conditions_uses_global_branch_and_returns_contract(
             condition2="control",
             sample_key="sample",
             cell_type_key=None,
-            n_samples_condition1=0,
-            n_samples_condition2=0,
+            n_samples_condition1=n_samples_condition1,
+            n_samples_condition2=n_samples_condition2,
             global_n_significant=3,
             global_top_upregulated=[],
             global_top_downregulated=[],
             cell_type_results=None,
-            results_key="",
+            results_key=results_key,
             statistics={"analysis_type": "global", "n_significant_genes": 3},
         )
 
@@ -111,4 +115,3 @@ async def test_compare_conditions_uses_global_branch_and_returns_contract(
     assert result.n_samples_condition1 == 2
     assert result.n_samples_condition2 == 2
     assert "condition_comparison_treated_vs_control" in adata.uns
-

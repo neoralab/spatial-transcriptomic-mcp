@@ -178,6 +178,38 @@ async def test_preprocess_data_success_persists_core_artifacts(monkeypatch: pyte
 
 
 @pytest.mark.asyncio
+async def test_preprocess_data_reuses_raw_matrix_for_counts_layer_when_aligned(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _install_lightweight_preprocess_mocks(monkeypatch)
+
+    adata = _make_adata(n_obs=24, n_vars=120)
+    adata.raw = adata.copy()
+    ctx = DummyCtx(adata)
+    params = PreprocessingParameters(
+        normalization="log",
+        n_hvgs=20,
+        filter_genes_min_cells=1,
+        filter_cells_min_genes=1,
+        remove_mito_genes=False,
+        remove_ribo_genes=False,
+        filter_mito_pct=None,
+        scale=False,
+    )
+
+    await preprocess_data("d1_raw_reuse", ctx, params)
+
+    assert ctx.saved_adata is not None
+    counts = ctx.saved_adata.layers["counts"]
+    raw_x = ctx.saved_adata.raw.X
+    assert counts.shape == raw_x.shape
+    if sp.issparse(counts):
+        assert counts is raw_x
+    else:
+        assert np.shares_memory(np.asarray(counts), np.asarray(raw_x))
+
+
+@pytest.mark.asyncio
 async def test_preprocess_data_warns_when_hvgs_too_low(monkeypatch: pytest.MonkeyPatch):
     _install_lightweight_preprocess_mocks(monkeypatch)
 
@@ -1099,6 +1131,48 @@ async def test_preprocess_data_sct_sparse_input_without_gene_filtering(
     assert result.n_genes == 120
     assert ctx.saved_adata is not None
     assert ctx.saved_adata.uns["sctransform"]["n_genes_filtered_by_sct"] == 0
+
+
+@pytest.mark.asyncio
+async def test_preprocess_data_sct_selects_expected_top_hvgs(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _install_lightweight_preprocess_mocks(monkeypatch)
+    monkeypatch.setattr(preprocessing_mod, "validate_r_package", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        preprocessing_mod,
+        "sample_expression_values",
+        lambda _adata: np.array([0.0, 1.0, 2.0]),
+    )
+
+    adata = _make_adata(n_obs=14, n_vars=120)
+    kept_genes = list(adata.var_names[:110])
+    pearson_residuals = np.full((110, adata.n_obs), 0.3, dtype=np.float32)
+    residual_variance = np.linspace(0.0, 1.0, 110, dtype=np.float32)
+    _install_fake_rpy2_for_sct(
+        monkeypatch,
+        pearson_residuals=pearson_residuals,
+        residual_variance=residual_variance,
+        kept_genes=kept_genes,
+    )
+
+    ctx = DummyCtx(adata)
+    await preprocess_data(
+        "d34_top_hvg",
+        ctx,
+        PreprocessingParameters(
+            normalization="sct",
+            filter_mito_pct=None,
+            remove_mito_genes=False,
+            sct_var_features_n=100,
+        ),
+    )
+
+    assert ctx.saved_adata is not None
+    hvg_mask = ctx.saved_adata.var["highly_variable"].to_numpy()
+    assert int(hvg_mask.sum()) == 100
+    assert not np.any(hvg_mask[:10])
+    assert np.all(hvg_mask[-100:])
 
 
 @pytest.mark.asyncio

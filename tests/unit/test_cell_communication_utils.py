@@ -38,6 +38,19 @@ def test_standardize_lr_pair_normalizes_separators():
     assert standardize_lr_pair("LIG_REC") == "LIG_REC"
 
 
+def test_top_n_desc_indices_handles_non_finite_and_bounds():
+    values = np.array([0.3, np.nan, 1.2, 0.8, -1.0], dtype=float)
+
+    top3 = ccc._top_n_desc_indices(values, 3)
+    assert list(top3) == [2, 3, 0]
+
+    top_all = ccc._top_n_desc_indices(values, 10)
+    assert list(top_all) == [2, 3, 0, 4, 1]
+
+    top_zero = ccc._top_n_desc_indices(values, 0)
+    assert top_zero.size == 0
+
+
 def test_store_and_get_ccc_results_roundtrip(minimal_spatial_adata):
     adata = minimal_spatial_adata.copy()
     storage = CCCStorage(
@@ -619,7 +632,8 @@ async def test_analyze_communication_cellphonedb_rejects_non_human_early(
     monkeypatch.setattr(ccc, "require", lambda *_args, **_kwargs: None)
 
     fake_cpdb_method = type("CP", (), {"call": staticmethod(lambda **_kwargs: {})})
-    import types, sys
+    import sys
+    import types
     cellphonedb_pkg = types.ModuleType("cellphonedb")
     src_pkg = types.ModuleType("cellphonedb.src")
     core_pkg = types.ModuleType("cellphonedb.src.core")

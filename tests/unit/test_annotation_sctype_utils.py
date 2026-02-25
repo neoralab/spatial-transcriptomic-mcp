@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections import OrderedDict
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -108,7 +109,10 @@ async def test_annotate_with_sctype_cache_hit_short_circuits_pipeline(
     cached_cell_types = ["T"] * (adata.n_obs // 2) + ["B"] * (adata.n_obs - adata.n_obs // 2)
     cached_counts = {"T": adata.n_obs // 2, "B": adata.n_obs - adata.n_obs // 2}
 
-    monkeypatch.setattr(ann, "validate_r_environment", lambda *_args, **_kwargs: object())
+    def _validate_should_not_run(*_args, **_kwargs):
+        raise AssertionError("R validation should not run on sc-type cache hit")
+
+    monkeypatch.setattr(ann, "validate_r_environment", _validate_should_not_run)
     monkeypatch.setattr(ann, "_get_sctype_cache_key", lambda *_args, **_kwargs: "k1")
     monkeypatch.setattr(
         ann,
@@ -131,9 +135,10 @@ async def test_annotate_with_sctype_cache_hit_short_circuits_pipeline(
         confidence_key="confidence_sctype",
     )
 
-    assert out.cell_types == cached_cell_types
+    assert out.cell_types == ["T", "B"]
     assert out.counts == cached_counts
     assert adata.obs["cell_type_sctype"].dtype.name == "category"
+    assert "confidence_sctype" in adata.obs
 
 
 @pytest.mark.asyncio
@@ -182,7 +187,7 @@ async def test_annotate_with_sctype_cache_miss_preserves_cell_type_order_and_cac
     assert out.cell_types == ["B", "T", "Unknown"]
     assert out.counts == {"B": 30, "T": 15, "Unknown": 15}
     assert captured["cache_key"] == "k2"
-    assert captured["results"][0] == ["B", "T", "Unknown"]
+    assert captured["results"][0] == per_cell_types
 
 
 def test_prepare_sctype_genesets_requires_tissue_without_custom_markers():
@@ -258,6 +263,8 @@ def test_convert_custom_markers_normalizes_and_filters(monkeypatch: pytest.Monke
 
 def test_load_sctype_functions_runs_install_and_load_scripts(monkeypatch: pytest.MonkeyPatch):
     calls: list[str] = []
+    monkeypatch.setenv("CHATSPATIAL_ALLOW_RUNTIME_R_INSTALL", "1")
+    monkeypatch.setenv("CHATSPATIAL_ALLOW_REMOTE_R_SOURCE", "1")
 
     class _Lock:
         def __enter__(self):
@@ -298,6 +305,14 @@ def test_load_sctype_functions_runs_install_and_load_scripts(monkeypatch: pytest
     assert any("gene_sets_prepare.R" in script for script in calls)
 
 
+def test_load_sctype_functions_rejects_remote_by_default(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("CHATSPATIAL_ALLOW_REMOTE_R_SOURCE", raising=False)
+    monkeypatch.delenv("CHATSPATIAL_SCTYPE_R_DIR", raising=False)
+
+    with pytest.raises(ann.ParameterError, match="remote R script sourcing is disabled"):
+        ann._load_sctype_functions(DummyCtx())
+
+
 def test_prepare_sctype_genesets_uses_custom_markers_short_circuit(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -316,6 +331,7 @@ def test_prepare_sctype_genesets_uses_custom_markers_short_circuit(
 
 def test_prepare_sctype_genesets_loads_database_and_returns_gs_list(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ):
     assigns: dict[str, object] = {}
     executed: list[str] = []
@@ -365,15 +381,30 @@ def test_prepare_sctype_genesets_loads_database_and_returns_gs_list(
         lambda _ctx: (robjects, None, None, None, None, _Conv(), openrlib, None),
     )
 
+    db_path = tmp_path / "db.xlsx"
+    db_path.write_bytes(b"dummy")
+
     out = ann._prepare_sctype_genesets(
-        AnnotationParameters(method="sctype", sctype_tissue="Brain", sctype_db_="db.xlsx"),
+        AnnotationParameters(
+            method="sctype",
+            sctype_tissue="Brain",
+            sctype_db_=str(db_path),
+        ),
         DummyCtx(),
     )
 
     assert out == {"ok": True}
-    assert assigns["db_path"] == "db.xlsx"
+    assert assigns["db_path"] == db_path.as_posix()
     assert assigns["tissue_type"] == "Brain"
     assert any("gene_sets_prepare" in code for code in executed)
+
+
+def test_prepare_sctype_genesets_rejects_remote_db_by_default():
+    with pytest.raises(ann.ParameterError, match="remote database download is disabled"):
+        ann._prepare_sctype_genesets(
+            AnnotationParameters(method="sctype", sctype_tissue="Brain"),
+            DummyCtx(),
+        )
 
 
 def test_run_sctype_scoring_converts_r_matrix_to_dataframe(
@@ -540,6 +571,43 @@ def test_load_cached_sctype_results_returns_none_on_corrupted_json(
     assert out is None
 
 
+def test_load_cached_sctype_results_expires_stale_memory_entry(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    expected = (["T"], {"T": 1}, {"T": 0.9}, None)
+    monkeypatch.setattr(ann, "_SCTYPE_CACHE", {"hit": (0.0, expected)})
+    monkeypatch.setattr(ann, "_SCTYPE_CACHE_TTL_SECONDS", 1)
+    monkeypatch.setattr(ann.time, "time", lambda: 100.0)
+
+    out = ann._load_cached_sctype_results("hit", DummyCtx())
+    assert out is None
+    assert "hit" not in ann._SCTYPE_CACHE
+
+
+def test_load_cached_sctype_results_expires_stale_disk_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(ann, "_SCTYPE_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(ann, "_SCTYPE_CACHE", {})
+    monkeypatch.setattr(ann, "_SCTYPE_CACHE_TTL_SECONDS", 1)
+    monkeypatch.setattr(ann.time, "time", lambda: 100.0)
+
+    cache_key = "stale"
+    payload = {
+        "cached_at": 0.0,
+        "per_cell_types": ["T"],
+        "counts": {"T": 1},
+        "confidence_by_celltype": {"T": 0.9},
+        "mapping_score": None,
+    }
+    cache_file = tmp_path / f"{cache_key}.json"
+    cache_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    out = ann._load_cached_sctype_results(cache_key, DummyCtx())
+    assert out is None
+    assert not cache_file.exists()
+
+
 @pytest.mark.asyncio
 async def test_cache_sctype_results_failure_is_non_fatal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -551,6 +619,22 @@ async def test_cache_sctype_results_failure_is_non_fatal(
 
     await ann._cache_sctype_results("k", (["T"], {"T": 1}, {"T": 0.9}, None), DummyCtx())
     assert ann._SCTYPE_CACHE == {}
+
+
+@pytest.mark.asyncio
+async def test_cache_sctype_results_respects_lru_capacity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(ann, "_SCTYPE_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(ann, "_SCTYPE_CACHE", OrderedDict())
+    monkeypatch.setattr(ann, "_SCTYPE_CACHE_MAX_ITEMS", 1)
+    monkeypatch.setattr(ann, "_SCTYPE_CACHE_TTL_SECONDS", 0)
+
+    await ann._cache_sctype_results("k1", (["T"], {"T": 1}, {"T": 0.9}, None), DummyCtx())
+    await ann._cache_sctype_results("k2", (["B"], {"B": 1}, {"B": 0.8}, None), DummyCtx())
+
+    assert "k1" not in ann._SCTYPE_CACHE
+    assert "k2" in ann._SCTYPE_CACHE
 
 
 @pytest.mark.asyncio

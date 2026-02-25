@@ -656,8 +656,8 @@ async def _identify_domains_stagate(
         # Optional: Display network statistics
         try:
             STAGATE_pyG.Stats_Spatial_Net(adata_stagate)
-        except Exception:
-            pass  # Stats display is optional
+        except Exception as exc:
+            ctx.debug(f"STAGATE Stats_Spatial_Net skipped: {exc}")
 
         # Set device (support CUDA, MPS, and CPU)
         device_str = await resolve_device_async(
@@ -794,7 +794,7 @@ async def _identify_domains_graphst(
         def run_clustering_optimized():
             # PCA on embeddings (same as GraphST)
             pca = PCA(n_components=20, random_state=42)
-            embedding = pca.fit_transform(adata_graphst.obsm["emb"].copy())
+            embedding = pca.fit_transform(adata_graphst.obsm["emb"])
             adata_graphst.obsm["emb_pca"] = embedding
 
             if params.graphst_clustering_method == "mclust":

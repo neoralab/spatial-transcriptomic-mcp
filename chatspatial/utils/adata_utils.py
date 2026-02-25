@@ -50,23 +50,25 @@ CLUSTER_KEY = "leiden"
 BATCH_KEY = "batch"
 
 # Alternative names for compatibility
-ALTERNATIVE_SPATIAL_KEYS: set[str] = {
+# Ordered priority lists for deterministic key resolution.
+# Do NOT convert these to sets: set iteration order is intentionally unstable.
+ALTERNATIVE_SPATIAL_KEYS: tuple[str, ...] = (
     "spatial",
     "X_spatial",
     "coordinates",
     "coords",
     "spatial_coords",
     "positions",
-}
-ALTERNATIVE_CELL_TYPE_KEYS: set[str] = {
+)
+ALTERNATIVE_CELL_TYPE_KEYS: tuple[str, ...] = (
     "cell_type",
     "celltype",
     "cell_types",
     "annotation",
     "cell_annotation",
     "predicted_celltype",
-}
-ALTERNATIVE_CLUSTER_KEYS: set[str] = {
+)
+ALTERNATIVE_CLUSTER_KEYS: tuple[str, ...] = (
     "leiden",
     "louvain",
     "clusters",
@@ -74,8 +76,8 @@ ALTERNATIVE_CLUSTER_KEYS: set[str] = {
     "clustering",
     "cluster_labels",
     "spatial_domains",
-}
-ALTERNATIVE_BATCH_KEYS: set[str] = {
+)
+ALTERNATIVE_BATCH_KEYS: tuple[str, ...] = (
     "batch",
     "sample",
     "dataset",
@@ -83,7 +85,7 @@ ALTERNATIVE_BATCH_KEYS: set[str] = {
     "replicate",
     "batch_id",
     "sample_id",
-}
+)
 
 
 # =============================================================================
@@ -166,11 +168,16 @@ def sample_expression_values(
         if len(X.data) > 0:
             return X.data[: min(n_samples, len(X.data))]
         else:
-            # Empty sparse matrix - return slice converted to dense
-            return X[:n_samples].toarray().flatten()
+            # Empty sparse matrix - return zeros without densifying.
+            total_values = int(X.shape[0]) * int(X.shape[1])
+            return np.zeros(
+                min(n_samples, total_values),
+                dtype=getattr(X, "dtype", float),
+            )
     else:
-        # For dense matrices, flatten and sample
-        return X.flatten()[: min(n_samples, X.size)]
+        # For dense matrices, ravel avoids unnecessary copies.
+        arr = np.asarray(X).ravel()
+        return arr[: min(n_samples, arr.size)]
 
 
 def require_spatial_coords(
@@ -568,8 +575,10 @@ def standardize_adata(adata: "ad.AnnData", copy: bool = True) -> "ad.AnnData":
     ensure_unique_var_names(adata)
 
     # Ensure categorical columns for known key types
-    all_categorical_keys = (
-        ALTERNATIVE_CELL_TYPE_KEYS | ALTERNATIVE_CLUSTER_KEYS | ALTERNATIVE_BATCH_KEYS
+    all_categorical_keys = set(
+        ALTERNATIVE_CELL_TYPE_KEYS
+        + ALTERNATIVE_CLUSTER_KEYS
+        + ALTERNATIVE_BATCH_KEYS
     )
     for key in adata.obs.columns:
         if key in all_categorical_keys:
@@ -594,10 +603,12 @@ def _move_spatial_to_standard(adata: "ad.AnnData") -> None:
         try:
             x = pd.to_numeric(adata.obs["x"], errors="coerce").values
             y = pd.to_numeric(adata.obs["y"], errors="coerce").values
-            if not (np.any(np.isnan(x)) or np.any(np.isnan(y))):
+            has_matching_shape = x.shape[0] == adata.n_obs and y.shape[0] == adata.n_obs
+            has_finite_values = np.isfinite(x).all() and np.isfinite(y).all()
+            if has_matching_shape and has_finite_values:
                 adata.obsm[SPATIAL_KEY] = np.column_stack([x, y]).astype("float64")
-        except Exception:
-            pass
+        except (TypeError, ValueError):
+            return
 
 
 # =============================================================================
@@ -847,7 +858,12 @@ def get_highly_variable_genes(
         else:
             var_scores = np.array(adata.X.var(axis=0)).flatten()
 
-        top_indices = np.argsort(var_scores)[-max_genes:]
+        top_k = min(max_genes, len(var_scores))
+        if top_k <= 0:
+            return []
+
+        top_indices = np.argpartition(var_scores, -top_k)[-top_k:]
+        top_indices = top_indices[np.argsort(var_scores[top_indices])[::-1]]
         return adata.var_names[top_indices].tolist()
 
     return []
@@ -1049,16 +1065,30 @@ def check_is_integer_counts(X: Any, sample_size: int = 100) -> tuple[bool, bool,
     """
     n_rows = min(sample_size, X.shape[0])
     n_cols = min(sample_size, X.shape[1])
+    if n_rows == 0 or n_cols == 0:
+        return True, False, False
+
     sample = X[:n_rows, :n_cols]
 
+    # Sparse path: inspect non-zero values directly to avoid dense materialization.
     if sparse.issparse(sample):
-        sample = sample.toarray()
+        sample_data = sample.data
+        if sample_data.size == 0:
+            return True, False, False
+        has_negatives = bool(np.any(sample_data < 0))
+        has_decimals = not np.allclose(sample_data, np.round(sample_data), atol=1e-6)
+        is_integer = not has_negatives and not has_decimals
+        return is_integer, has_negatives, bool(has_decimals)
 
-    has_negatives = float(sample.min()) < 0
-    has_decimals = not np.allclose(sample, np.round(sample), atol=1e-6)
+    sample_arr = np.asarray(sample)
+    if sample_arr.size == 0:
+        return True, False, False
+
+    has_negatives = bool(np.any(sample_arr < 0))
+    has_decimals = not np.allclose(sample_arr, np.round(sample_arr), atol=1e-6)
     is_integer = not has_negatives and not has_decimals
 
-    return is_integer, has_negatives, has_decimals
+    return is_integer, has_negatives, bool(has_decimals)
 
 
 def ensure_counts_layer(
@@ -1195,8 +1225,8 @@ def get_raw_data_source(
                     has_decimals=has_dec,
                 )
             sources_tried.append("raw (normalized, skipped)")
-        except Exception:
-            sources_tried.append("raw (error, skipped)")
+        except Exception as exc:
+            sources_tried.append(f"raw (error: {exc.__class__.__name__}, skipped)")
 
     # Source 2: layers["counts"]
     if "counts" in adata.layers:
@@ -1461,13 +1491,18 @@ def get_gene_profile(
     )
     top_hvg = hvg_list if hvg_list else None
 
-    # Top expressed genes
+    # Top expressed genes (partial sort keeps O(n) selection cost for large n_vars)
+    top_k = min(10, adata.n_vars)
+    if top_k == 0:
+        return top_hvg, []
+
     try:
-        mean_expr = np.array(adata.X.mean(axis=0)).flatten()
-        top_idx = np.argsort(mean_expr)[-10:][::-1]  # Descending order
+        mean_expr = np.asarray(adata.X.mean(axis=0)).ravel()
+        top_idx = np.argpartition(mean_expr, -top_k)[-top_k:]
+        top_idx = top_idx[np.argsort(mean_expr[top_idx])[::-1]]
         top_expr = adata.var_names[top_idx].tolist()
     except Exception:
-        top_expr = adata.var_names[:10].tolist()  # Fallback
+        top_expr = adata.var_names[:top_k].tolist()  # Fallback
 
     return top_hvg, top_expr
 
@@ -1529,7 +1564,7 @@ def find_common_genes(*gene_collections: Any) -> list[str]:
             - Any Iterable[str]: Will be converted to set
 
     Returns:
-        List of common gene names (order not guaranteed)
+        List of common gene names in first-collection order (stable/deterministic)
 
     Raises:
         ValueError: If fewer than 2 collections provided
@@ -1549,14 +1584,24 @@ def find_common_genes(*gene_collections: Any) -> list[str]:
     if len(gene_collections) < 2:
         raise ParameterError("find_common_genes requires at least 2 gene collections")
 
-    # Convert first collection to set
-    result = set(gene_collections[0])
+    first_collection = list(gene_collections[0])
+    result = set(first_collection)
 
     # Intersect with remaining collections
     for genes in gene_collections[1:]:
         result &= set(genes)
 
-    return list(result)
+    if not result:
+        return []
+
+    # Preserve first collection order while deduplicating.
+    seen: set[str] = set()
+    ordered_common: list[str] = []
+    for gene in first_collection:
+        if gene in result and gene not in seen:
+            ordered_common.append(gene)
+            seen.add(gene)
+    return ordered_common
 
 
 def validate_gene_overlap(

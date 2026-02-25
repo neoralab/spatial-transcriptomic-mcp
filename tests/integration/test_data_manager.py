@@ -22,11 +22,26 @@ async def test_data_manager_create_update_get(manager, minimal_spatial_adata):
     assert data_id.startswith("custom_")
     assert ds["name"] == "demo"
     assert ds["adata"].n_obs == minimal_spatial_adata.n_obs
+    assert ds["n_cells"] == minimal_spatial_adata.n_obs
+    assert ds["n_genes"] == minimal_spatial_adata.n_vars
 
     subset = minimal_spatial_adata[:20, :10].copy()
     await manager.update_adata(data_id, subset)
     ds2 = await manager.get_dataset(data_id)
     assert ds2["adata"].shape == (20, 10)
+    assert ds2["n_cells"] == 20
+    assert ds2["n_genes"] == 10
+
+    listed = await manager.list_datasets()
+    assert listed == [
+        {
+            "id": data_id,
+            "name": "demo",
+            "type": "unknown",
+            "n_cells": 20,
+            "n_genes": 10,
+        }
+    ]
 
 
 @pytest.mark.integration

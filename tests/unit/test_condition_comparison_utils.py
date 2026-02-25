@@ -509,9 +509,13 @@ async def test_compare_conditions_stratified_branch_warns_for_non_integer_counts
     called = {"stratified": False}
 
     async def _fake_stratified(*_args, **_kwargs):
+        data_id = _kwargs.get("data_id", "")
+        n_samples_condition1 = _kwargs.get("n_samples_condition1", 0)
+        n_samples_condition2 = _kwargs.get("n_samples_condition2", 0)
+        results_key = _kwargs.get("results_key", "")
         called["stratified"] = True
         return ConditionComparisonResult(
-            data_id="",
+            data_id=data_id,
             method="pseudobulk",
             comparison="treated vs control",
             condition_key="condition",
@@ -519,10 +523,10 @@ async def test_compare_conditions_stratified_branch_warns_for_non_integer_counts
             condition2="control",
             sample_key="sample",
             cell_type_key="cell_type",
-            n_samples_condition1=0,
-            n_samples_condition2=0,
+            n_samples_condition1=n_samples_condition1,
+            n_samples_condition2=n_samples_condition2,
             cell_type_results=[],
-            results_key="",
+            results_key=results_key,
             statistics={"analysis_type": "cell_type_stratified"},
         )
 

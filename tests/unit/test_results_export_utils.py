@@ -27,6 +27,7 @@ def test_export_analysis_result_writes_csv_and_index_with_sanitized_keys(
     minimal_spatial_adata, monkeypatch, tmp_path: Path
 ):
     _patch_home(monkeypatch, tmp_path)
+    monkeypatch.setenv("CHATSPATIAL_EXPORT_RESULTS", "1")
     adata = minimal_spatial_adata.copy()
     adata.var["flashs_qval"] = np.linspace(0.01, 0.9, adata.n_vars)
     complex_key = r"metrics/with\slashes"
@@ -101,6 +102,7 @@ def test_export_analysis_result_continues_when_one_key_extraction_fails(
     minimal_spatial_adata, monkeypatch, tmp_path: Path
 ):
     _patch_home(monkeypatch, tmp_path)
+    monkeypatch.setenv("CHATSPATIAL_EXPORT_RESULTS", "1")
     adata = minimal_spatial_adata.copy()
     adata.uns["demo_metadata"] = {
         "method": "demo",

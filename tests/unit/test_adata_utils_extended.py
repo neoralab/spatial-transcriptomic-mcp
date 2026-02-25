@@ -38,6 +38,25 @@ def test_discovery_helpers_find_cell_cluster_and_batch_keys(minimal_spatial_adat
     assert au.get_batch_key(empty) is None
 
 
+def test_discovery_helpers_use_deterministic_priority_when_multiple_keys_exist(
+    minimal_spatial_adata,
+):
+    adata = minimal_spatial_adata.copy()
+    adata.obs["celltype"] = ["A"] * adata.n_obs
+    adata.obs["cell_type"] = ["B"] * adata.n_obs
+    adata.obs["cluster"] = ["x"] * adata.n_obs
+    adata.obs["leiden"] = ["0"] * adata.n_obs
+    adata.obs["sample"] = ["s"] * adata.n_obs
+    adata.obs["batch"] = ["b"] * adata.n_obs
+    adata.obsm["coords"] = adata.obsm["spatial"].copy()
+
+    # Priority order should be stable and explicit.
+    assert au.get_cell_type_key(adata) == "cell_type"
+    assert au.get_cluster_key(adata) == "leiden"
+    assert au.get_batch_key(adata) == "batch"
+    assert au.get_spatial_key(adata) == "spatial"
+
+
 def test_sample_expression_values_handles_dense_sparse_and_empty_sparse(minimal_spatial_adata):
     adata = minimal_spatial_adata.copy()
 
@@ -52,7 +71,8 @@ def test_sample_expression_values_handles_dense_sparse_and_empty_sparse(minimal_
     adata_empty = adata.copy()
     adata_empty.X = sparse.csr_matrix((adata_empty.n_obs, adata_empty.n_vars), dtype=float)
     empty_sample = au.sample_expression_values(adata_empty, n_samples=3)
-    assert empty_sample.shape[0] <= 3 * adata_empty.n_vars
+    assert empty_sample.shape[0] == 3
+    assert np.all(empty_sample == 0)
 
 
 def test_require_spatial_coords_validates_nan_inf_and_missing_key(minimal_spatial_adata):
@@ -418,6 +438,24 @@ def test_hvg_fallback_to_variance_for_sparse_and_dense(minimal_spatial_adata):
     assert len(sparse_hvgs) == 4
 
 
+def test_hvg_fallback_to_variance_returns_descending_ranked_genes():
+    import anndata as ad
+
+    X = np.array(
+        [
+            [1.0, 10.0, 3.0, 0.0],
+            [1.0, 0.0, 3.0, 5.0],
+            [1.0, 10.0, 3.0, 0.0],
+            [1.0, 0.0, 3.0, 5.0],
+        ]
+    )
+    adata = ad.AnnData(X)
+    adata.var_names = ["g0", "g1", "g2", "g3"]
+
+    out = au.get_highly_variable_genes(adata, max_genes=3, fallback_to_variance=True)
+    assert out == ["g1", "g3", "g2"]
+
+
 def test_make_unique_names_and_var_name_fixers(minimal_spatial_adata):
     assert au.make_unique_names(["A", "B", "A", "A"]) == ["A", "B", "A-1", "A-2"]
 
@@ -450,6 +488,25 @@ def test_check_is_integer_counts_and_ensure_counts_layer(minimal_spatial_adata):
     assert has_neg is True
     assert has_dec is True
     assert au.check_is_integer_counts(sparse.csr_matrix(dense)) == (True, False, False)
+    assert au.check_is_integer_counts(sparse.csr_matrix((3, 3), dtype=float)) == (
+        True,
+        False,
+        False,
+    )
+
+    sparse_non_int = sparse.csr_matrix(np.array([[0.0, 1.5], [0.0, 2.0]]))
+    is_int_sparse, has_neg_sparse, has_dec_sparse = au.check_is_integer_counts(
+        sparse_non_int
+    )
+    assert is_int_sparse is False
+    assert has_neg_sparse is False
+    assert has_dec_sparse is True
+
+    sparse_negative = sparse.csr_matrix(np.array([[0.0, -1.0], [0.0, 2.0]]))
+    is_int_neg, has_neg_neg, has_dec_neg = au.check_is_integer_counts(sparse_negative)
+    assert is_int_neg is False
+    assert has_neg_neg is True
+    assert has_dec_neg is False
 
     adata = minimal_spatial_adata.copy()
     adata.layers["counts"] = np.asarray(adata.X).copy()
@@ -535,6 +592,13 @@ def test_profiles_and_overlap_helpers(minimal_spatial_adata):
     common = au.find_common_genes(["A", "B", "C"], ["B", "C"], ["C", "D"])
     assert common == ["C"]
 
+    ordered_common = au.find_common_genes(
+        ["G3", "G1", "G2", "G1"],
+        ["G1", "G2", "G3"],
+        ["G2", "G3"],
+    )
+    assert ordered_common == ["G3", "G2"]
+
     with pytest.raises(ParameterError, match="at least 2 gene collections"):
         au.find_common_genes(["A"])
 
@@ -560,6 +624,23 @@ def test_profiles_large_cardinality_and_gene_profile_fallback(minimal_spatial_ad
     adata.X = np.asarray(adata.X).view(_BrokenMeanArray)
     _top_hvg, top_expr = au.get_gene_profile(adata)
     assert len(top_expr) == min(10, adata.n_vars)
+
+
+def test_get_gene_profile_returns_top_expression_in_descending_order():
+    import anndata as ad
+
+    expr = np.array(
+        [
+            [1.0, 10.0, 3.0, 4.0],
+            [1.0, 10.0, 3.0, 4.0],
+        ],
+        dtype=float,
+    )
+    adata = ad.AnnData(expr)
+    adata.var_names = ["g0", "g1", "g2", "g3"]
+
+    _top_hvg, top_expr = au.get_gene_profile(adata)
+    assert top_expr[:4] == ["g1", "g3", "g2", "g0"]
 
 
 def test_get_raw_data_source_raw_error_and_counts_skip_path(

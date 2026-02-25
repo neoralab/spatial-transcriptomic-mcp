@@ -37,6 +37,13 @@ from ..utils.mcp_utils import suppress_output
 from ..utils.results_export import export_analysis_result
 
 
+def _copy_matrix_data(data: Any) -> Any:
+    """Return an independent copy of dense/sparse matrix-like data."""
+    if hasattr(data, "copy"):
+        return data.copy()
+    return np.array(data, copy=True)
+
+
 def preprocess_for_velocity(
     adata: "ad.AnnData",
     min_shared_counts: int = 30,
@@ -160,16 +167,28 @@ async def _prepare_velovi_data(
     Returns:
         Preprocessed AnnData copy ready for VELOVI.
     """
+    import anndata as ad
     import scvelo as scv
 
-    adata_velovi = adata.copy()
-
-    # Convert layer names to VELOVI standards
-    if "spliced" in adata_velovi.layers and "unspliced" in adata_velovi.layers:
-        adata_velovi.layers["Ms"] = adata_velovi.layers["spliced"]
-        adata_velovi.layers["Mu"] = adata_velovi.layers["unspliced"]
-    else:
+    if "spliced" not in adata.layers or "unspliced" not in adata.layers:
         raise DataNotFoundError("Missing required 'spliced' and 'unspliced' layers")
+
+    # Build a minimal working AnnData to avoid copying unrelated layers/obsm/uns.
+    spliced = _copy_matrix_data(adata.layers["spliced"])
+    unspliced = _copy_matrix_data(adata.layers["unspliced"])
+    adata_velovi = ad.AnnData(
+        X=spliced,
+        obs=adata.obs.copy(),
+        var=adata.var.copy(),
+    )
+    adata_velovi.obs_names = adata.obs_names.copy()
+    adata_velovi.var_names = adata.var_names.copy()
+    adata_velovi.layers["spliced"] = spliced
+    adata_velovi.layers["unspliced"] = unspliced
+
+    # Convert layer names to VELOVI standards.
+    adata_velovi.layers["Ms"] = adata_velovi.layers["spliced"]
+    adata_velovi.layers["Mu"] = adata_velovi.layers["unspliced"]
 
     # scvelo preprocessing
     # enforce=True ensures scvelo recomputes everything even if data was pre-normalized
@@ -285,9 +304,9 @@ async def analyze_velocity_with_velovi(
             velocities = velocities.values
 
         # Ensure numpy array format
-        latent_time = np.asarray(latent_time)
-        velocities = np.asarray(velocities)
-        latent_repr = np.asarray(latent_repr)
+        latent_time = np.asarray(latent_time, dtype=np.float32)
+        velocities = np.asarray(velocities, dtype=np.float32)
+        latent_repr = np.asarray(latent_repr, dtype=np.float32)
 
         # Safe scaling calculation
         t = latent_time
@@ -305,15 +324,18 @@ async def analyze_velocity_with_velovi(
 
         if hasattr(scaling, "to_numpy"):
             scaling = scaling.to_numpy()
-        scaling = np.asarray(scaling)
+        scaling = np.asarray(scaling, dtype=np.float32)
 
-        # Calculate scaled velocities
+        # Calculate scaled velocities in-place to reduce peak memory.
+        scaled_velocities = velocities
+        if not scaled_velocities.flags.writeable:
+            scaled_velocities = scaled_velocities.copy()
         if scaling.ndim == 0:
-            scaled_velocities = velocities / scaling
-        elif scaling.ndim == 1 and velocities.ndim == 2:
-            scaled_velocities = velocities / scaling[np.newaxis, :]
+            scaled_velocities /= scaling
+        elif scaling.ndim == 1 and scaled_velocities.ndim == 2:
+            scaled_velocities /= scaling[np.newaxis, :]
         else:
-            scaled_velocities = velocities / scaling
+            scaled_velocities /= scaling
 
         # Store results in preprocessed data object
         adata_prepared.layers["velocity_velovi"] = scaled_velocities

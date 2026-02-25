@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from chatspatial.utils import results_export as re
 
@@ -24,6 +25,42 @@ def test_export_analysis_result_returns_empty_when_results_keys_missing(
     adata = minimal_spatial_adata.copy()
     adata.uns["demo_metadata"] = {"method": "demo", "results_keys": {}}
     assert re.export_analysis_result(adata, "d_meta", "demo") == []
+
+
+def test_get_export_limit_handles_invalid_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CHATSPATIAL_EXPORT_MAX_ROWS", "not-an-int")
+    assert re._get_export_limit("CHATSPATIAL_EXPORT_MAX_ROWS", 123) == 123
+
+
+def test_export_analysis_result_can_be_disabled_by_env(
+    minimal_spatial_adata, monkeypatch, tmp_path: Path
+) -> None:
+    _patch_home(monkeypatch, tmp_path)
+    monkeypatch.setenv("CHATSPATIAL_EXPORT_RESULTS", "0")
+
+    adata = minimal_spatial_adata.copy()
+    adata.uns["demo_metadata"] = {
+        "method": "demo",
+        "results_keys": {"obs": ["group"]},
+    }
+
+    assert re.export_analysis_result(adata, "d_disabled", "demo") == []
+    assert not (tmp_path / ".chatspatial" / "results" / "d_disabled").exists()
+
+
+def test_trim_export_dataframe_applies_row_and_column_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CHATSPATIAL_EXPORT_MAX_ROWS", "3")
+    monkeypatch.setenv("CHATSPATIAL_EXPORT_MAX_COLS", "2")
+    df = pd.DataFrame(
+        np.arange(20, dtype=float).reshape(5, 4),
+        columns=["c0", "c1", "c2", "c3"],
+    )
+
+    out = re._trim_export_dataframe(df, location="obs", key="demo")
+    assert out.shape == (3, 2)
+    assert list(out.columns) == ["c0", "c1"]
 
 
 def test_export_analysis_result_unknown_location_is_skipped(
@@ -136,6 +173,27 @@ def test_extract_from_obs_and_var_return_none_for_non_matching_key(minimal_spati
     adata = minimal_spatial_adata.copy()
     assert re._extract_from_obs(adata, "not_present") is None
     assert re._extract_from_var(adata, "not_present") is None
+
+
+def test_extract_from_obs_and_var_support_prefix_wildcard(minimal_spatial_adata) -> None:
+    adata = minimal_spatial_adata.copy()
+    adata.obs["score_alpha"] = np.arange(adata.n_obs)
+    adata.obs["score_beta"] = np.arange(adata.n_obs)
+    adata.var["gene_metric_a"] = np.arange(adata.n_vars)
+    adata.var["gene_metric_b"] = np.arange(adata.n_vars)
+
+    out_obs = re._extract_from_obs(adata, "score_*")
+    out_var = re._extract_from_var(adata, "gene_metric_*")
+
+    assert out_obs is not None and set(out_obs.columns) == {"score_alpha", "score_beta"}
+    assert out_var is not None and set(out_var.columns) == {
+        "gene_metric_a",
+        "gene_metric_b",
+    }
+
+    # No implicit substring matching without wildcard.
+    assert re._extract_from_obs(adata, "score_") is None
+    assert re._extract_from_var(adata, "gene_metric_") is None
 
 
 def test_extract_from_obs_and_var_exact_match_fallback_for_non_substring_keys() -> None:

@@ -25,6 +25,7 @@ from ..utils import validate_obs_column
 from ..utils.adata_utils import (
     check_is_integer_counts,
     get_raw_data_source,
+    shallow_copy_adata,
     store_analysis_metadata,
 )
 from ..utils.dependency_manager import require
@@ -100,7 +101,7 @@ async def compare_conditions(
 
     # Filter to only the two conditions of interest
     mask = adata.obs[params.condition_key].isin([params.condition1, params.condition2])
-    adata_filtered = adata[mask].copy()
+    adata_filtered = shallow_copy_adata(adata[mask])
 
     await ctx.info(
         f"Comparing {params.condition1} vs {params.condition2}: "
@@ -146,25 +147,37 @@ async def compare_conditions(
             f"(minimum: {params.min_samples_per_condition})"
         )
 
+    results_key = f"condition_comparison_{params.condition1}_vs_{params.condition2}"
+
     # Determine analysis mode
     if params.cell_type_key is None:
         # Global analysis (all cells together)
         result = await _run_global_comparison(
-            adata_filtered, raw_X, var_names, ctx, params
+            adata_filtered,
+            raw_X,
+            var_names,
+            ctx,
+            params,
+            data_id=data_id,
+            n_samples_condition1=int(n_samples_cond1),
+            n_samples_condition2=int(n_samples_cond2),
+            results_key=results_key,
         )
     else:
         # Cell type stratified analysis
         result = await _run_stratified_comparison(
-            adata_filtered, raw_X, var_names, ctx, params
+            adata_filtered,
+            raw_X,
+            var_names,
+            ctx,
+            params,
+            data_id=data_id,
+            n_samples_condition1=int(n_samples_cond1),
+            n_samples_condition2=int(n_samples_cond2),
+            results_key=results_key,
         )
 
-    # Update result with common fields
-    result.data_id = data_id
-    result.n_samples_condition1 = int(n_samples_cond1)
-    result.n_samples_condition2 = int(n_samples_cond2)
-
     # Store results in adata
-    results_key = f"condition_comparison_{params.condition1}_vs_{params.condition2}"
     adata.uns[results_key] = {
         "comparison": result.comparison,
         "method": result.method,
@@ -190,7 +203,6 @@ async def compare_conditions(
     # Export results for reproducibility
     export_analysis_result(adata, data_id, "condition_comparison")
 
-    result.results_key = results_key
     return result
 
 
@@ -219,34 +231,35 @@ def _create_pseudobulk(
     Returns:
         Tuple of (counts_df, metadata_df, cell_counts)
     """
-    # Filter to specific cell type if provided
+    # Build working obs/count views without mutating or deep-copying AnnData.
     if cell_type is not None and cell_type_key is not None:
-        mask = adata.obs[cell_type_key] == cell_type
-        adata = adata[mask].copy()
-        raw_X = raw_X[mask.values]
+        ct_mask = (adata.obs[cell_type_key] == cell_type).to_numpy()
+        obs_work = adata.obs.loc[ct_mask, [sample_key, condition_key]]
+        raw_X_work = raw_X[ct_mask]
+    else:
+        obs_work = adata.obs[[sample_key, condition_key]]
+        raw_X_work = raw_X
 
-    # Group by sample
-    sample_groups = adata.obs.groupby(sample_key)
+    # Group by sample; .indices already provides integer positional indices.
+    sample_groups = obs_work.groupby(sample_key).indices
+    condition_values = obs_work[condition_key].to_numpy()
 
     pseudobulk_data = []
     metadata_list = []
     cell_counts = {}
 
-    for sample_id, group in sample_groups:
-        n_cells = len(group)
+    for sample_id, int_idx in sample_groups.items():
+        n_cells = len(int_idx)
         if n_cells < min_cells_per_sample:
             continue
 
-        # Get integer indices for this sample
-        int_idx = adata.obs.index.get_indexer(group.index)
-
         # Sum counts (handles both sparse and dense matrices)
         sample_counts = (
-            np.asarray(raw_X[int_idx].sum(axis=0)).flatten().astype(np.int64)
+            np.asarray(raw_X_work[int_idx].sum(axis=0)).flatten().astype(np.int64)
         )
 
         # Get condition for this sample
-        condition = group[condition_key].iloc[0]
+        condition = condition_values[int(int_idx[0])]
 
         pseudobulk_data.append(sample_counts)
         metadata_list.append(
@@ -266,7 +279,7 @@ def _create_pseudobulk(
     # Create DataFrames
     sample_ids = [m["sample_id"] for m in metadata_list]
     counts_df = pd.DataFrame(
-        np.array(pseudobulk_data),
+        np.vstack(pseudobulk_data),
         index=sample_ids,
         columns=var_names,
     )
@@ -359,6 +372,10 @@ async def _run_global_comparison(
     var_names: pd.Index,
     ctx: ToolContext,
     params: ConditionComparisonParameters,
+    data_id: str = "",
+    n_samples_condition1: int = 0,
+    n_samples_condition2: int = 0,
+    results_key: str = "",
 ) -> ConditionComparisonResult:
     """Run global comparison (all cells, no cell type stratification).
 
@@ -419,7 +436,7 @@ async def _run_global_comparison(
     comparison = f"{params.condition1} vs {params.condition2}"
 
     return ConditionComparisonResult(
-        data_id="",  # Will be filled by caller
+        data_id=data_id,
         method="pseudobulk",
         comparison=comparison,
         condition_key=params.condition_key,
@@ -427,13 +444,13 @@ async def _run_global_comparison(
         condition2=params.condition2,
         sample_key=params.sample_key,
         cell_type_key=None,
-        n_samples_condition1=0,  # Will be filled by caller
-        n_samples_condition2=0,  # Will be filled by caller
+        n_samples_condition1=n_samples_condition1,
+        n_samples_condition2=n_samples_condition2,
         global_n_significant=n_significant,
         global_top_upregulated=top_up,
         global_top_downregulated=top_down,
         cell_type_results=None,
-        results_key="",  # Will be filled by caller
+        results_key=results_key,
         statistics={
             "analysis_type": "global",
             "n_pseudobulk_samples": len(counts_df),
@@ -452,6 +469,10 @@ async def _run_stratified_comparison(
     var_names: pd.Index,
     ctx: ToolContext,
     params: ConditionComparisonParameters,
+    data_id: str = "",
+    n_samples_condition1: int = 0,
+    n_samples_condition2: int = 0,
+    results_key: str = "",
 ) -> ConditionComparisonResult:
     """Run cell type stratified comparison.
 
@@ -561,7 +582,7 @@ async def _run_stratified_comparison(
     comparison = f"{params.condition1} vs {params.condition2}"
 
     return ConditionComparisonResult(
-        data_id="",  # Will be filled by caller
+        data_id=data_id,
         method="pseudobulk",
         comparison=comparison,
         condition_key=params.condition_key,
@@ -569,13 +590,13 @@ async def _run_stratified_comparison(
         condition2=params.condition2,
         sample_key=params.sample_key,
         cell_type_key=params.cell_type_key,
-        n_samples_condition1=0,  # Will be filled by caller
-        n_samples_condition2=0,  # Will be filled by caller
+        n_samples_condition1=n_samples_condition1,
+        n_samples_condition2=n_samples_condition2,
         global_n_significant=None,
         global_top_upregulated=None,
         global_top_downregulated=None,
         cell_type_results=cell_type_results,
-        results_key="",  # Will be filled by caller
+        results_key=results_key,
         statistics={
             "analysis_type": "cell_type_stratified",
             "n_cell_types_analyzed": len(cell_type_results),

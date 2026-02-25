@@ -13,6 +13,7 @@ from ..utils import validate_obs_column
 from ..utils.adata_utils import (
     check_is_integer_counts,
     get_raw_data_source,
+    shallow_copy_adata,
     store_analysis_metadata,
     to_dense,
 )
@@ -94,7 +95,9 @@ async def differential_expression(
             )
 
         # Filter data to only include valid groups
-        adata_filtered = adata[adata.obs[group_key].isin(valid_groups.index)].copy()
+        adata_filtered = shallow_copy_adata(
+            adata[adata.obs[group_key].isin(valid_groups.index)]
+        )
 
         # Convert dtype after subsetting (4x more memory efficient than copying first)
         if needs_dtype_fix:
@@ -191,10 +194,10 @@ async def differential_expression(
     # Prepare the AnnData object for analysis
     if use_rest_as_reference:
         # Use the full AnnData object when comparing with 'rest'
-        temp_adata = adata.copy()
+        temp_adata = shallow_copy_adata(adata)
     else:
         # Create a temporary copy of the AnnData object with only the two groups
-        temp_adata = adata[adata.obs[group_key].isin([group1, group2])].copy()
+        temp_adata = shallow_copy_adata(adata[adata.obs[group_key].isin([group1, group2])])
 
     # Convert dtype after subsetting (4x more memory efficient than copying first)
     if needs_dtype_fix:
@@ -478,23 +481,30 @@ async def _run_pydeseq2(
     if group2 == "rest":
         # Binary comparison: group1 vs rest
         # Use vectorized where() instead of apply(lambda) for efficiency
-        condition = adata.obs[group_key].where(adata.obs[group_key] == group1, "rest")
+        condition = np.where(adata.obs[group_key].to_numpy() == group1, group1, "rest")
+        sample_values = adata.obs[sample_key].astype(str).to_numpy()
+        raw_X_work = raw_X
     else:
         # Pairwise comparison: filter to only group1 and group2
-        mask = adata.obs[group_key].isin([group1, group2])
-        adata = adata[mask].copy()
-        raw_X = raw_X[mask.values]
-        condition = adata.obs[group_key].astype(str)
+        mask = adata.obs[group_key].isin([group1, group2]).to_numpy()
+        condition = adata.obs.loc[mask, group_key].astype(str).to_numpy()
+        sample_values = adata.obs.loc[mask, sample_key].astype(str).to_numpy()
+        raw_X_work = raw_X[mask]
 
-    # Create pseudobulk by aggregating (summing) counts per sample+condition
-    adata.obs["_de_condition"] = condition.values
-    adata.obs["_pseudobulk_id"] = (
-        adata.obs[sample_key].astype(str) + "_" + adata.obs["_de_condition"].astype(str)
+    # Build pseudobulk labels without mutating adata.obs
+    condition_values = np.asarray(condition, dtype=str)
+    pseudobulk_ids_arr = sample_values + "_" + condition_values
+    pseudobulk_obs = pd.DataFrame(
+        {
+            "condition": condition_values,
+            "sample": sample_values,
+            "_pseudobulk_id": pseudobulk_ids_arr,
+        }
     )
 
     # Aggregate counts
-    pseudobulk_groups = adata.obs.groupby("_pseudobulk_id")
-    pseudobulk_ids = list(pseudobulk_groups.groups.keys())
+    pseudobulk_groups = pseudobulk_obs.groupby("_pseudobulk_id").indices
+    pseudobulk_ids = list(pseudobulk_groups.keys())
     n_samples = len(pseudobulk_ids)
 
     if n_samples < 4:
@@ -505,25 +515,23 @@ async def _run_pydeseq2(
         )
 
     # Build pseudobulk count matrix
-    pseudobulk_counts = np.zeros((n_samples, raw_X.shape[1]), dtype=np.int64)
+    pseudobulk_counts = np.zeros((n_samples, raw_X_work.shape[1]), dtype=np.int64)
     pseudobulk_metadata = []
 
     for i, pb_id in enumerate(pseudobulk_ids):
-        # Get indices for this pseudobulk group
-        group_labels = pseudobulk_groups.groups[pb_id]
-        # Convert pandas Index to integer positional indices for numpy array indexing
-        int_idx = adata.obs.index.get_indexer(group_labels)
+        # Get integer positional indices for this pseudobulk group
+        int_idx = pseudobulk_groups[pb_id]
         # Sum counts (handles both sparse and dense matrices)
         pseudobulk_counts[i] = (
-            np.asarray(raw_X[int_idx].sum(axis=0)).flatten().astype(np.int64)
+            np.asarray(raw_X_work[int_idx].sum(axis=0)).flatten().astype(np.int64)
         )
         # Get condition from first cell in this group
-        first_int_idx = int_idx[0]
+        first_int_idx = int(int_idx[0])
         pseudobulk_metadata.append(
             {
                 "sample_id": pb_id,
-                "condition": adata.obs.iloc[first_int_idx]["_de_condition"],
-                "sample": adata.obs.iloc[first_int_idx][sample_key],
+                "condition": condition_values[first_int_idx],
+                "sample": sample_values[first_int_idx],
             }
         )
 

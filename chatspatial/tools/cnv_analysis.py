@@ -30,6 +30,27 @@ from ..utils.results_export import export_analysis_result
 # import-time failures when rpy2/R is not installed
 
 
+def _copy_matrix_data(data):
+    """Return an independent copy of dense/sparse matrix-like data."""
+    if hasattr(data, "copy"):
+        return data.copy()
+    return np.array(data, copy=True)
+
+
+def _build_infercnvpy_workspace(adata: "ad.AnnData") -> "ad.AnnData":
+    """Build minimal AnnData workspace for infercnvpy without copying unrelated fields."""
+    import anndata as ad
+
+    adata_cnv = ad.AnnData(
+        X=_copy_matrix_data(adata.X),
+        obs=adata.obs.copy(),
+        var=adata.var.copy(),
+    )
+    adata_cnv.obs_names = adata.obs_names.copy()
+    adata_cnv.var_names = adata.var_names.copy()
+    return adata_cnv
+
+
 async def infer_cnv(
     data_id: str,
     ctx: "ToolContext",
@@ -105,9 +126,9 @@ async def _infer_cnv_infercnvpy(
     require("infercnvpy", ctx, feature="CNV analysis")
     import infercnvpy as cnv
 
-    # Note: adata is already validated in infer_cnv() before dispatch
-    # Create a copy of adata for CNV analysis
-    adata_cnv = adata.copy()
+    # Note: adata is already validated in infer_cnv() before dispatch.
+    # Build a minimal workspace to avoid copying unrelated layers/obsm/uns.
+    adata_cnv = _build_infercnvpy_workspace(adata)
 
     # Check if gene position information is available
     if "chromosome" not in adata_cnv.var.columns:
@@ -644,8 +665,10 @@ def _infer_cnv_numbat(
         if os.path.exists(out_dir):
             try:
                 shutil.rmtree(out_dir)
-            except Exception:
-                pass  # Cleanup failure is not critical
+            except Exception as cleanup_error:
+                debug_fn = getattr(ctx, "debug", None)
+                if callable(debug_fn):
+                    debug_fn(f"Numbat cleanup skipped: {cleanup_error}")
 
         # Deactivate converters
         pandas2ri.deactivate()

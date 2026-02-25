@@ -29,7 +29,6 @@ if TYPE_CHECKING:
 from ...utils.adata_utils import (
     find_common_genes,
     get_spatial_key,
-    to_dense,
     validate_gene_overlap,
     validate_obs_column,
 )
@@ -309,10 +308,10 @@ async def _prepare_counts(
         is_integer = np.allclose(sample, np.round(sample), equal_nan=True)
 
         if is_integer:
-            dense = to_dense(adata_copy.X)
-            adata_copy.X = (
-                dense.astype(np.int32, copy=False) if dense.dtype != np.int32 else dense
-            )
+            if sparse.issparse(adata_copy.X):
+                adata_copy.X = adata_copy.X.astype(np.int32, copy=False)
+            else:
+                adata_copy.X = np.asarray(adata_copy.X).astype(np.int32, copy=False)
 
     return adata_copy
 

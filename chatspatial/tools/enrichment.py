@@ -25,10 +25,73 @@ if TYPE_CHECKING:
 from ..models.analysis import EnrichmentResult
 from ..utils.adata_utils import get_raw_data_source, store_analysis_metadata, to_dense
 from ..utils.dependency_manager import require
-from ..utils.exceptions import ParameterError, ProcessingError
+from ..utils.exceptions import DataNotFoundError, ParameterError, ProcessingError
 from ..utils.results_export import export_analysis_result
 
 logger = logging.getLogger(__name__)
+
+# Preferred/legacy library candidates to keep versioning deterministic while
+# remaining backward-compatible with environments missing the latest release.
+GENESET_LIBRARY_CANDIDATES: dict[str, tuple[str, ...]] = {
+    "GO_Biological_Process": ("GO_Biological_Process_2025", "GO_Biological_Process_2023"),
+    "GO_Molecular_Function": ("GO_Molecular_Function_2025", "GO_Molecular_Function_2023"),
+    "GO_Cellular_Component": ("GO_Cellular_Component_2025", "GO_Cellular_Component_2023"),
+    "Reactome_Pathways": ("Reactome_Pathways_2024", "Reactome_2022"),
+    "MSigDB_Hallmark": ("MSigDB_Hallmark_2020",),
+    "Cell_Type_Markers": ("CellMarker_Augmented_2021",),
+}
+GO_ASPECT_TO_DATABASE_KEY: dict[str, str] = {
+    "BP": "GO_Biological_Process",
+    "MF": "GO_Molecular_Function",
+    "CC": "GO_Cellular_Component",
+}
+
+# Centralized Enrichr library mapping to keep year/version consistent.
+ENRICHR_LIBRARY_MAP: dict[str, str] = {
+    key: candidates[0] for key, candidates in GENESET_LIBRARY_CANDIDATES.items()
+}
+DEFAULT_ENRICHR_DATABASES: tuple[str, ...] = (
+    "GO_Biological_Process",
+    "GO_Molecular_Function",
+    "GO_Cellular_Component",
+    "KEGG_Pathways",
+    "Reactome_Pathways",
+    "MSigDB_Hallmark",
+)
+
+
+def _top_n_desc_indices(values: np.ndarray, n_top: int) -> np.ndarray:
+    """Return indices of top-n values in descending order.
+
+    Non-finite values are treated as the lowest possible scores.
+    """
+    if n_top <= 0 or values.size == 0:
+        return np.array([], dtype=int)
+
+    rank_values = np.asarray(values, dtype=float)
+    rank_values = np.where(np.isfinite(rank_values), rank_values, -np.inf)
+    n = min(n_top, rank_values.size)
+
+    top_idx = np.argpartition(rank_values, -n)[-n:]
+    return top_idx[np.argsort(rank_values[top_idx])[::-1]]
+
+
+def _load_library_first_available(database_key: str, organism: str) -> dict[str, list[str]]:
+    """Load the first available library from deterministic candidates."""
+    if database_key not in GENESET_LIBRARY_CANDIDATES:
+        raise ParameterError(f"Unknown database key: {database_key}")
+
+    last_error: Exception | None = None
+    for library_name in GENESET_LIBRARY_CANDIDATES[database_key]:
+        try:
+            return gp.get_library(library_name, organism=organism)
+        except Exception as e:  # pragma: no cover - exercised via caller-level wrapping
+            last_error = e
+            continue
+
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError(f"No library candidates configured for database key: {database_key}")
 
 
 # ============================================================================
@@ -192,6 +255,29 @@ def _compute_std_sparse_compatible(X, axis: int = 0, ddof: int = 1) -> np.ndarra
         return np.array(X.std(axis=axis, ddof=ddof)).flatten()
 
 
+def _compute_cv_ranking(X, var_names: pd.Index) -> dict[str, float]:
+    """Compute coefficient-of-variation ranking for genes."""
+    mean = np.array(X.mean(axis=0)).flatten()
+    std = _compute_std_sparse_compatible(X, axis=0, ddof=1)
+    cv = np.zeros_like(mean)
+    nonzero_mask = np.abs(mean) > 1e-10
+    cv[nonzero_mask] = std[nonzero_mask] / np.abs(mean[nonzero_mask])
+    return dict(zip(var_names, cv, strict=False))
+
+
+def _compute_variance_ranking(X, var_names: pd.Index) -> dict[str, float]:
+    """Compute variance-based ranking for genes."""
+    import scipy.sparse as sp
+
+    if sp.issparse(X):
+        mean = np.array(X.mean(axis=0)).flatten()
+        mean_sq = np.array(X.power(2).mean(axis=0)).flatten()
+        var = mean_sq - np.power(mean, 2)
+    else:
+        var = np.array(X.var(axis=0)).flatten()
+    return dict(zip(var_names, var, strict=False))
+
+
 # ============================================================================
 # GENE FORMAT CONVERSION UTILITIES
 # ============================================================================
@@ -298,26 +384,17 @@ def map_gene_set_database_to_enrichr_library(database_name: str, species: str) -
     Raises:
         ValueError: If database_name is not supported
     """
-    mapping = {
-        "GO_Biological_Process": "GO_Biological_Process_2025",
-        "GO_Molecular_Function": "GO_Molecular_Function_2025",
-        "GO_Cellular_Component": "GO_Cellular_Component_2025",
-        "KEGG_Pathways": (
-            "KEGG_2021_Human" if species.lower() == "human" else "KEGG_2019_Mouse"
-        ),
-        "Reactome_Pathways": "Reactome_Pathways_2024",
-        "MSigDB_Hallmark": "MSigDB_Hallmark_2020",
-        "Cell_Type_Markers": "CellMarker_Augmented_2021",
-    }
+    if database_name == "KEGG_Pathways":
+        return "KEGG_2021_Human" if species.lower() == "human" else "KEGG_2019_Mouse"
 
-    if database_name not in mapping:
-        available_options = list(mapping)
+    if database_name not in ENRICHR_LIBRARY_MAP:
+        available_options = sorted([*ENRICHR_LIBRARY_MAP.keys(), "KEGG_Pathways"])
         raise ParameterError(
             f"Unknown gene set database: {database_name}. "
             f"Available options: {available_options}"
         )
 
-    return mapping[database_name]
+    return ENRICHR_LIBRARY_MAP[database_name]
 
 
 # ============================================================================
@@ -358,6 +435,8 @@ def perform_gsea(
     """
     # gseapy imported at module level (required dependency)
 
+    ranking_method = method.strip().lower()
+
     # Prepare ranking
     if ranking_key and ranking_key in adata.var:
         # Use pre-computed ranking
@@ -373,9 +452,22 @@ def perform_gsea(
         # IMPORTANT: GSEA requires biologically meaningful ranking, not just variance
         # Reference: Subramanian et al. (2005) PNAS, GSEA-MSIGDB documentation
 
-        if "condition" in adata.obs or "group" in adata.obs:
+        if ranking_method not in {
+            "signal_to_noise",
+            "coefficient_of_variation",
+            "variance",
+            "highly_variable_rank",
+            "dispersions_norm",
+        }:
+            raise ParameterError(
+                "Unsupported GSEA ranking method: "
+                f"{method}. Supported: signal_to_noise, coefficient_of_variation, "
+                "variance, highly_variable_rank, dispersions_norm"
+            )
+
+        if ranking_method == "signal_to_noise":
             group_key = "condition" if "condition" in adata.obs else "group"
-            groups = adata.obs[group_key].unique()
+            groups = adata.obs[group_key].unique() if group_key in adata.obs else []
 
             if len(groups) == 2:
                 # Binary comparison: Use Signal-to-Noise Ratio (GSEA default)
@@ -401,39 +493,30 @@ def perform_gsea(
                 # Compute Signal-to-Noise Ratio
                 s2n = (mean1 - mean2) / (std1 + std2)
                 ranking = dict(zip(var_names, s2n, strict=True))
-
             else:
-                # Multi-group: Use Coefficient of Variation (normalized variance)
-                # CV = σ / μ - accounts for mean-variance relationship
-                # This is more appropriate than raw variance for genes with different expression levels
-                mean = np.array(X.mean(axis=0)).flatten()
-                std = _compute_std_sparse_compatible(X, axis=0, ddof=1)
-
-                # Compute CV (avoid division by zero)
-                cv = np.zeros_like(mean)
-                nonzero_mask = np.abs(mean) > 1e-10
-                cv[nonzero_mask] = std[nonzero_mask] / np.abs(mean[nonzero_mask])
-
-                ranking = dict(zip(var_names, cv, strict=False))
-        else:
-            # No group information: Use best available ranking method
-            if "highly_variable_rank" in adata.var:
-                # Prefer pre-computed HVG ranking (most robust)
-                ranking = adata.var["highly_variable_rank"].to_dict()
-            elif "dispersions_norm" in adata.var:
-                # Use Seurat-style normalized dispersion
-                ranking = adata.var["dispersions_norm"].to_dict()
-            else:
-                # Fallback: Coefficient of Variation (better than raw variance)
-                # Use sparse-compatible std calculation
-                mean = np.array(X.mean(axis=0)).flatten()
-                std = _compute_std_sparse_compatible(X, axis=0, ddof=1)
-
-                cv = np.zeros_like(mean)
-                nonzero_mask = np.abs(mean) > 1e-10
-                cv[nonzero_mask] = std[nonzero_mask] / np.abs(mean[nonzero_mask])
-
-                ranking = dict(zip(var_names, cv, strict=False))
+                # S2N requires exactly 2 groups; fall back to CV when unavailable.
+                ranking = _compute_cv_ranking(X, var_names)
+        elif ranking_method == "coefficient_of_variation":
+            ranking = _compute_cv_ranking(X, var_names)
+        elif ranking_method == "variance":
+            ranking = _compute_variance_ranking(X, var_names)
+        elif ranking_method == "highly_variable_rank":
+            if "highly_variable_rank" not in adata.var:
+                raise DataNotFoundError(
+                    "Ranking method 'highly_variable_rank' requested but "
+                    "adata.var['highly_variable_rank'] is missing."
+                )
+            ranking = adata.var["highly_variable_rank"].to_dict()
+        elif ranking_method == "dispersions_norm":
+            if "dispersions_norm" not in adata.var:
+                raise DataNotFoundError(
+                    "Ranking method 'dispersions_norm' requested but "
+                    "adata.var['dispersions_norm'] is missing."
+                )
+            ranking = adata.var["dispersions_norm"].to_dict()
+        else:  # pragma: no cover - defensive fallback, guarded by method validation
+            # Defensive fallback (should be unreachable due validation above)
+            ranking = _compute_cv_ranking(X, var_names)
 
     # Run GSEA preranked
     try:
@@ -515,7 +598,7 @@ def perform_gsea(
             method="gsea",
             parameters={
                 "permutation_num": permutation_num,
-                "ranking_method": method,
+                "ranking_method": ranking_method,
                 "min_size": min_size,
                 "max_size": max_size,
                 "ranking_key": ranking_key,
@@ -617,7 +700,8 @@ def perform_ora(
             # IMPORTANT: names is a numpy recarray with shape (n_genes,)
             # and dtype.names contains group names as fields
             # Access genes by group name: names[group_name][i]
-            degs_set = set()  # Use set for O(1) duplicate check
+            degs_seen: set[str] = set()
+            degs_ordered: list[str] = []
 
             # Iterate over all groups
             for group_name in names.dtype.names:
@@ -628,9 +712,12 @@ def perform_ora(
                     if pvals is None and i >= 100:  # Top 100 genes when no pvals
                         continue
 
-                    degs_set.add(names[group_name][i])
+                    gene_name = str(names[group_name][i])
+                    if gene_name not in degs_seen:
+                        degs_seen.add(gene_name)
+                        degs_ordered.append(gene_name)
 
-            gene_list = list(degs_set)
+            gene_list = degs_ordered
         else:
             # Use highly variable genes
             if "highly_variable" in adata.var:
@@ -646,7 +733,7 @@ def perform_ora(
                 nonzero_mask = np.abs(mean) > 1e-10
                 cv[nonzero_mask] = std[nonzero_mask] / np.abs(mean[nonzero_mask])
 
-                top_indices = np.argsort(cv)[-500:]
+                top_indices = _top_n_desc_indices(cv, 500)
                 gene_list = adata.var_names[top_indices].tolist()
 
     # Background genes
@@ -1038,12 +1125,8 @@ def perform_enrichr(
     gene_sets_list: list[str]
     if gene_sets is None:
         gene_sets_list = [
-            "GO_Biological_Process_2023",
-            "GO_Molecular_Function_2023",
-            "GO_Cellular_Component_2023",
-            "KEGG_2021_Human" if organism == "human" else "KEGG_2019_Mouse",
-            "Reactome_2022",
-            "MSigDB_Hallmark_2020",
+            map_gene_set_database_to_enrichr_library(db_name, organism)
+            for db_name in DEFAULT_ENRICHR_DATABASES
         ]
     else:
         # Map user-friendly database name to actual Enrichr library name
@@ -1415,11 +1498,9 @@ def load_msigdb_gene_sets(
 
         if collection == "H":
             # Hallmark gene sets
-            gene_sets = gp.get_library_name(organism=organism)
-            if "MSigDB_Hallmark_2020" in gene_sets:
-                gene_sets_dict = gp.get_library(
-                    "MSigDB_Hallmark_2020", organism=organism
-                )
+            gene_sets_dict = _load_library_first_available(
+                "MSigDB_Hallmark", organism
+            )
 
         elif collection == "C2" and subcollection == "CP:KEGG":
             # KEGG pathways
@@ -1430,27 +1511,29 @@ def load_msigdb_gene_sets(
 
         elif collection == "C2" and subcollection == "CP:REACTOME":
             # Reactome pathways
-            gene_sets_dict = gp.get_library("Reactome_2022", organism=organism)
+            gene_sets_dict = _load_library_first_available(
+                "Reactome_Pathways", organism
+            )
 
         elif collection == "C5":
             # GO gene sets
             if subcollection == "GO:BP" or subcollection is None:
                 gene_sets_dict.update(
-                    gp.get_library("GO_Biological_Process_2023", organism=organism)
+                    _load_library_first_available("GO_Biological_Process", organism)
                 )
             if subcollection == "GO:MF" or subcollection is None:
                 gene_sets_dict.update(
-                    gp.get_library("GO_Molecular_Function_2023", organism=organism)
+                    _load_library_first_available("GO_Molecular_Function", organism)
                 )
             if subcollection == "GO:CC" or subcollection is None:
                 gene_sets_dict.update(
-                    gp.get_library("GO_Cellular_Component_2023", organism=organism)
+                    _load_library_first_available("GO_Cellular_Component", organism)
                 )
 
         elif collection == "C8":
             # Cell type signatures
-            gene_sets_dict = gp.get_library(
-                "CellMarker_Augmented_2021", organism=organism
+            gene_sets_dict = _load_library_first_available(
+                "Cell_Type_Markers", organism
             )
 
         # Filter by size
@@ -1479,19 +1562,14 @@ def load_go_gene_sets(
     Returns:
         Dictionary of GO gene sets.
     """
-    aspect_map = {
-        "BP": "GO_Biological_Process_2023",
-        "MF": "GO_Molecular_Function_2023",
-        "CC": "GO_Cellular_Component_2023",
-    }
-
-    if aspect not in aspect_map:
+    if aspect not in GO_ASPECT_TO_DATABASE_KEY:
         raise ParameterError(f"Invalid GO aspect: {aspect}")
 
     # gseapy imported at module level (required dependency)
     try:
         organism = _get_organism_name(species)
-        gene_sets = gp.get_library(aspect_map[aspect], organism=organism)
+        database_key = GO_ASPECT_TO_DATABASE_KEY[aspect]
+        gene_sets = _load_library_first_available(database_key, organism)
 
         # Filter by size
         filtered_sets = _filter_gene_sets_by_size(gene_sets, min_size, max_size)
@@ -1547,7 +1625,7 @@ def load_reactome_gene_sets(
     # gseapy imported at module level (required dependency)
     try:
         organism = _get_organism_name(species)
-        gene_sets = gp.get_library("Reactome_2022", organism=organism)
+        gene_sets = _load_library_first_available("Reactome_Pathways", organism)
 
         # Filter by size (use shared utility for consistency)
         filtered_sets = _filter_gene_sets_by_size(gene_sets, min_size, max_size)

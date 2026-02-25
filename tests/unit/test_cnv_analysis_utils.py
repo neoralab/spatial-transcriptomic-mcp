@@ -92,6 +92,51 @@ async def test_infer_cnv_infercnvpy_success_sparse_stats_and_metadata(
 
 
 @pytest.mark.asyncio
+async def test_infer_cnv_infercnvpy_workspace_isolation_avoids_leaking_temp_mutations(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    adata.obs["cell_type"] = ["A"] * 30 + ["B"] * 30
+    adata.var["chromosome"] = ["chr1"] * 12 + ["chr2"] * 12
+    adata.obsm["keep"] = np.ones((adata.n_obs, 2), dtype=float)
+
+    fake_infercnvpy = ModuleType("infercnvpy")
+
+    def _fake_infercnv(adata_obj, **_kwargs):
+        adata_obj.obs["_tmp_obs"] = "x"
+        adata_obj.var["_tmp_var"] = "y"
+        adata_obj.uns["_tmp_uns"] = {"z": 1}
+        adata_obj.obsm["X_cnv"] = sparse.csr_matrix(
+            np.tile(np.array([0.0, 1.0]), (adata_obj.n_obs, 1))
+        )
+        adata_obj.uns["cnv"] = {"ok": True}
+
+    fake_infercnvpy.tl = SimpleNamespace(infercnv=_fake_infercnv)
+    monkeypatch.setitem(__import__("sys").modules, "infercnvpy", fake_infercnvpy)
+    monkeypatch.setattr(cnv, "require", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cnv, "export_analysis_result", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(cnv, "store_analysis_metadata", lambda *_args, **_kwargs: None)
+
+    await cnv.infer_cnv(
+        "d1",
+        DummyCtx(adata),
+        CNVParameters(
+            method="infercnvpy",
+            reference_key="cell_type",
+            reference_categories=["A"],
+            cluster_cells=False,
+            dendrogram=False,
+        ),
+    )
+
+    assert "_tmp_obs" not in adata.obs.columns
+    assert "_tmp_var" not in adata.var.columns
+    assert "_tmp_uns" not in adata.uns
+    assert "keep" in adata.obsm
+    assert "X_cnv" in adata.obsm
+
+
+@pytest.mark.asyncio
 async def test_infer_cnv_infercnvpy_missing_chromosome_wraps_failure(
     minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
 ):
@@ -260,6 +305,12 @@ def _install_fake_rpy2_stack(monkeypatch: pytest.MonkeyPatch):
     fake_robj.numpy2ri = SimpleNamespace(converter=_Converter(), deactivate=lambda: None)
     fake_robj.pandas2ri = SimpleNamespace(converter=_Converter(), deactivate=lambda: None)
     monkeypatch.setitem(__import__("sys").modules, "rpy2.robjects", fake_robj)
+
+    # Also patch top-level package so `import rpy2.robjects` resolves to fake
+    fake_rpy2_pkg = ModuleType("rpy2")
+    fake_rpy2_pkg.robjects = fake_robj
+    fake_rpy2_pkg.rinterface_lib = fake_openrlib_mod
+    monkeypatch.setitem(__import__("sys").modules, "rpy2", fake_rpy2_pkg)
 
 
 @pytest.mark.asyncio
@@ -441,6 +492,12 @@ def _install_fake_rpy2_stack_with_runner(
     fake_robj.numpy2ri = SimpleNamespace(converter=_Converter(), deactivate=lambda: None)
     fake_robj.pandas2ri = SimpleNamespace(converter=_Converter(), deactivate=lambda: None)
     monkeypatch.setitem(__import__("sys").modules, "rpy2.robjects", fake_robj)
+
+    # Also patch top-level package so `import rpy2.robjects` resolves to fake
+    fake_rpy2_pkg = ModuleType("rpy2")
+    fake_rpy2_pkg.robjects = fake_robj
+    fake_rpy2_pkg.rinterface_lib = fake_openrlib_mod
+    monkeypatch.setitem(__import__("sys").modules, "rpy2", fake_rpy2_pkg)
 
 
 @pytest.mark.asyncio
@@ -666,8 +723,10 @@ def test_infer_cnv_numbat_dependency_error_when_r_package_unavailable(
     adata.obs["cell_type"] = ["A"] * 30 + ["B"] * 30
 
     _install_fake_rpy2_stack(monkeypatch)
-    __import__("sys").modules["rpy2.robjects"].r = (
-        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("numbat missing"))
+    monkeypatch.setattr(
+        __import__("sys").modules["rpy2.robjects"],
+        "r",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("numbat missing")),
     )
 
     with pytest.raises(DependencyError, match="Numbat R package unavailable"):

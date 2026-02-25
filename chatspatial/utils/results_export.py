@@ -12,6 +12,7 @@ Design Principles:
 
 import json
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -22,6 +23,59 @@ if TYPE_CHECKING:
     from anndata import AnnData
 
 logger = logging.getLogger(__name__)
+
+
+def _is_export_enabled() -> bool:
+    """Whether automatic analysis export is enabled."""
+    # Default OFF: exporting large analysis artifacts should be explicit.
+    raw = os.getenv("CHATSPATIAL_EXPORT_RESULTS", "0").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _get_export_limit(name: str, default: int) -> int:
+    """Read an integer export limit from env with safe fallback."""
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+    return max(1, value)
+
+
+def _trim_export_dataframe(
+    df: pd.DataFrame,
+    *,
+    location: str,
+    key: str,
+) -> pd.DataFrame:
+    """Apply deterministic row/column caps to keep exports bounded."""
+    max_rows = _get_export_limit("CHATSPATIAL_EXPORT_MAX_ROWS", 50000)
+    max_cols = _get_export_limit("CHATSPATIAL_EXPORT_MAX_COLS", 2000)
+    out = df
+
+    if out.shape[1] > max_cols:
+        logger.warning(
+            "Trimming export columns for %s/%s: %d -> %d",
+            location,
+            key,
+            out.shape[1],
+            max_cols,
+        )
+        out = out.iloc[:, :max_cols]
+
+    if out.shape[0] > max_rows:
+        import numpy as np
+
+        keep_idx = np.linspace(0, out.shape[0] - 1, num=max_rows, dtype=int)
+        logger.warning(
+            "Downsampling export rows for %s/%s: %d -> %d",
+            location,
+            key,
+            out.shape[0],
+            max_rows,
+        )
+        out = out.iloc[keep_idx]
+
+    return out
 
 
 # =============================================================================
@@ -88,6 +142,10 @@ def export_analysis_result(
         >>> export_analysis_result(adata, "my_data", "differential_expression")
         [Path('~/.chatspatial/results/my_data/differential_expression/wilcoxon_rank_genes_groups.csv')]
     """
+    if not _is_export_enabled():
+        logger.debug("Auto-export disabled by CHATSPATIAL_EXPORT_RESULTS")
+        return []
+
     metadata_key = f"{analysis_name}_metadata"
     if metadata_key not in adata.uns:
         logger.debug(f"No metadata found for {analysis_name}, skipping export")
@@ -110,6 +168,7 @@ def export_analysis_result(
             try:
                 df = _extract_as_dataframe(adata, location, key, analysis_name)
                 if df is not None and len(df) > 0:
+                    df = _trim_export_dataframe(df, location=location, key=key)
                     # Sanitize key for filename
                     safe_key = key.replace("/", "_").replace("\\", "_")
                     filename = f"{method}_{safe_key}.csv"
@@ -334,16 +393,20 @@ def _extract_co_occurrence(
 
 
 def _extract_from_obs(adata: "AnnData", key: str) -> pd.DataFrame | None:
-    """Extract columns from adata.obs matching the key pattern."""
-    # Find columns containing the key
-    matching_cols = [c for c in adata.obs.columns if key in c]
+    """Extract columns from adata.obs by explicit key contract.
 
-    if not matching_cols:
-        # Try exact match
-        if key in adata.obs.columns:
-            matching_cols = [key]
-        else:
-            return None
+    Matching behavior:
+    - Exact match: key == column name
+    - Optional wildcard prefix: key endswith('*') and matches column prefix
+    """
+    matching_cols: list[str] = []
+    if key in adata.obs.columns:
+        matching_cols = [key]
+    elif isinstance(key, str) and key.endswith("*"):
+        prefix = key[:-1]
+        matching_cols = [c for c in adata.obs.columns if c.startswith(prefix)]
+    else:
+        return None
 
     df = adata.obs[matching_cols].copy()
     df.index.name = "cell_id"
@@ -351,16 +414,20 @@ def _extract_from_obs(adata: "AnnData", key: str) -> pd.DataFrame | None:
 
 
 def _extract_from_var(adata: "AnnData", key: str) -> pd.DataFrame | None:
-    """Extract columns from adata.var matching the key pattern."""
-    # Find columns containing the key
-    matching_cols = [c for c in adata.var.columns if key in c]
+    """Extract columns from adata.var by explicit key contract.
 
-    if not matching_cols:
-        # Try exact match
-        if key in adata.var.columns:
-            matching_cols = [key]
-        else:
-            return None
+    Matching behavior:
+    - Exact match: key == column name
+    - Optional wildcard prefix: key endswith('*') and matches column prefix
+    """
+    matching_cols: list[str] = []
+    if key in adata.var.columns:
+        matching_cols = [key]
+    elif isinstance(key, str) and key.endswith("*"):
+        prefix = key[:-1]
+        matching_cols = [c for c in adata.var.columns if c.startswith(prefix)]
+    else:
+        return None
 
     df = adata.var[matching_cols].copy()
     df.index.name = "gene"

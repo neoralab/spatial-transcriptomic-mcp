@@ -15,8 +15,10 @@ if "gseapy" not in sys.modules:
 
 from chatspatial.tools import enrichment as enrichment_module
 from chatspatial.tools.enrichment import (
+    _compute_variance_ranking,
     _convert_gene_format_for_matching,
     _filter_significant_statistics,
+    _top_n_desc_indices,
     load_cell_marker_gene_sets,
     load_go_gene_sets,
     load_kegg_gene_sets,
@@ -29,7 +31,7 @@ from chatspatial.tools.enrichment import (
     perform_spatial_enrichment,
     perform_ssgsea,
 )
-from chatspatial.utils.exceptions import ParameterError, ProcessingError
+from chatspatial.utils.exceptions import DataNotFoundError, ParameterError, ProcessingError
 
 
 class _LogCtx:
@@ -110,17 +112,18 @@ def test_map_gene_set_database_to_enrichr_library_rejects_unknown_option() -> No
 
 
 @pytest.mark.parametrize(
-    "mode, expected_top",
+    "mode, ranking_method, expected_top",
     [
-        ("binary", None),
-        ("multigroup", None),
-        ("hvg", "gene_0"),
-        ("dispersion", "gene_0"),
-        ("cv", None),
+        ("binary", "signal_to_noise", None),
+        ("multigroup", "signal_to_noise", None),
+        ("hvg", "highly_variable_rank", "gene_0"),
+        ("dispersion", "dispersions_norm", "gene_0"),
+        ("cv", "coefficient_of_variation", None),
     ],
 )
 def test_perform_gsea_covers_ranking_strategy_branches(
     mode: str,
+    ranking_method: str,
     expected_top: str | None,
     monkeypatch: pytest.MonkeyPatch,
     minimal_spatial_adata,
@@ -167,6 +170,7 @@ def test_perform_gsea_covers_ranking_strategy_branches(
         adata=adata,
         gene_sets={"GS_A": ["gene_0", "gene_1"], "GS_B": ["gene_2", "gene_3"]},
         ranking_key=None,
+        method=ranking_method,
         permutation_num=10,
         min_size=1,
         max_size=1000,
@@ -182,6 +186,78 @@ def test_perform_gsea_covers_ranking_strategy_branches(
 
     if expected_top is not None:
         assert rnk_df.index[0] == expected_top
+
+
+def test_perform_gsea_rejects_unknown_ranking_method(
+    monkeypatch: pytest.MonkeyPatch, minimal_spatial_adata
+) -> None:
+    adata = minimal_spatial_adata.copy()
+    _patch_metadata_noop(monkeypatch)
+
+    with pytest.raises(ParameterError, match="Unsupported GSEA ranking method"):
+        perform_gsea(
+            adata=adata,
+            gene_sets={"GS_A": ["gene_0", "gene_1"]},
+            method="not_a_real_method",
+        )
+
+
+def test_compute_variance_ranking_covers_sparse_and_dense_paths(
+    minimal_spatial_adata,
+) -> None:
+    adata = minimal_spatial_adata.copy()
+    dense_ranking = _compute_variance_ranking(np.asarray(adata.X), adata.var_names)
+    assert len(dense_ranking) == adata.n_vars
+
+    from scipy import sparse as sp
+
+    sparse_ranking = _compute_variance_ranking(
+        sp.csr_matrix(np.asarray(adata.X)), adata.var_names
+    )
+    assert len(sparse_ranking) == adata.n_vars
+
+
+def test_perform_gsea_uses_variance_ranking_mode(
+    monkeypatch: pytest.MonkeyPatch, minimal_spatial_adata
+) -> None:
+    adata = minimal_spatial_adata.copy()
+    _patch_metadata_noop(monkeypatch)
+
+    monkeypatch.setattr(
+        enrichment_module,
+        "get_raw_data_source",
+        lambda _adata, prefer_complete_genes=True: SimpleNamespace(
+            X=_adata.X, var_names=_adata.var_names
+        ),
+    )
+
+    class _Res:
+        def __init__(self):
+            self.res2d = _gsea_res_df()
+
+    monkeypatch.setattr(
+        enrichment_module.gp, "prerank", lambda **_kwargs: _Res(), raising=False
+    )
+
+    out = perform_gsea(
+        adata=adata,
+        gene_sets={"GS_A": ["gene_0", "gene_1"]},
+        method="variance",
+        permutation_num=10,
+    )
+    assert out.method == "gsea"
+
+
+@pytest.mark.parametrize("method_name", ["highly_variable_rank", "dispersions_norm"])
+def test_perform_gsea_raises_when_requested_ranking_column_missing(
+    method_name: str, minimal_spatial_adata
+) -> None:
+    with pytest.raises(DataNotFoundError, match="requested but adata.var"):
+        perform_gsea(
+            adata=minimal_spatial_adata.copy(),
+            gene_sets={"GS_A": ["gene_0", "gene_1"]},
+            method=method_name,
+        )
 
 
 def test_perform_gsea_propagates_prerank_failures(
@@ -329,6 +405,19 @@ def test_perform_ora_fallback_cv_and_case_insensitive_gene_matching(
     assert out_case.gene_set_statistics["GS_A"]["query_size"] == 2
 
 
+def test_top_n_desc_indices_handles_non_finite_and_bounds() -> None:
+    values = np.array([0.2, np.nan, 1.5, 0.7, -1.0], dtype=float)
+
+    top3 = _top_n_desc_indices(values, 3)
+    assert list(top3) == [2, 3, 0]
+
+    top_all = _top_n_desc_indices(values, 10)
+    assert list(top_all) == [2, 3, 0, 4, 1]
+
+    top_zero = _top_n_desc_indices(values, 0)
+    assert top_zero.size == 0
+
+
 def test_perform_ora_handles_empty_pvalues_after_size_filter(
     monkeypatch: pytest.MonkeyPatch, minimal_spatial_adata
 ) -> None:
@@ -463,13 +552,6 @@ def test_load_msigdb_additional_collections_and_species_paths(
 ) -> None:
     calls: list[str] = []
 
-    monkeypatch.setattr(
-        enrichment_module.gp,
-        "get_library_name",
-        lambda organism: ["MSigDB_Hallmark_2020"],
-        raising=False,
-    )
-
     def _fake_get_library(name: str, organism: str):
         calls.append(name)
         return {"ok": ["A", "B", "C"]}
@@ -519,10 +601,10 @@ def test_load_msigdb_additional_collections_and_species_paths(
     assert out_c8 == {"ok": ["A", "B", "C"]}
     assert "KEGG_2019_Mouse" in calls
     assert "KEGG_2021_Human" in calls
-    assert "Reactome_2022" in calls
-    assert "GO_Biological_Process_2023" in calls
-    assert "GO_Molecular_Function_2023" in calls
-    assert "GO_Cellular_Component_2023" in calls
+    assert "Reactome_Pathways_2024" in calls
+    assert "GO_Biological_Process_2025" in calls
+    assert "GO_Molecular_Function_2025" in calls
+    assert "GO_Cellular_Component_2025" in calls
     assert "CellMarker_Augmented_2021" in calls
 
 
@@ -531,19 +613,12 @@ def test_loader_functions_wrap_external_failures_in_processing_error(
 ) -> None:
     monkeypatch.setattr(
         enrichment_module.gp,
-        "get_library_name",
+        "get_library",
         lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
         raising=False,
     )
     with pytest.raises(ProcessingError, match="Failed to load MSigDB gene sets"):
         load_msigdb_gene_sets("human")
-
-    monkeypatch.setattr(
-        enrichment_module.gp,
-        "get_library",
-        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
-        raising=False,
-    )
     with pytest.raises(ProcessingError, match="Failed to load GO gene sets"):
         load_go_gene_sets("human", aspect="BP")
     with pytest.raises(ProcessingError, match="Failed to load KEGG pathways"):

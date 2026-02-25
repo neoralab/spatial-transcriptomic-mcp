@@ -259,12 +259,16 @@ def test_prepare_stalign_image_returns_normalized_tensor(monkeypatch: pytest.Mon
 
     coords = np.array([[0.0, 0.0], [10.0, 0.0], [5.0, 8.0]], dtype=np.float32)
     intensity = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+    coords_before = coords.copy()
+    intensity_before = intensity.copy()
     xgrid, image = reg._prepare_stalign_image(coords, intensity, (16, 12))
 
     assert len(xgrid) == 2
     assert image.shape == (16, 12)
     assert float(image.max()) <= 1.0
     assert float(image.min()) >= 0.0
+    np.testing.assert_allclose(coords, coords_before)
+    np.testing.assert_allclose(intensity, intensity_before)
 
 
 def test_register_paste_pairwise_populates_registered_coords(
@@ -299,6 +303,8 @@ def test_register_paste_pairwise_populates_registered_coords(
     out = reg._register_paste([ad1, ad2], RegistrationParameters(method="paste"))
     np.testing.assert_allclose(out[0].obsm["spatial_registered"], ad1.obsm["spatial"] + 1.0)
     np.testing.assert_allclose(out[1].obsm["spatial_registered"], ad2.obsm["spatial"] + 2.0)
+    assert out[0].X is ad1.X
+    assert out[1].X is ad2.X
 
 
 def test_register_paste_multi_slice_uses_center_alignment(
@@ -341,6 +347,9 @@ def test_register_paste_multi_slice_uses_center_alignment(
     np.testing.assert_allclose(out[0].obsm["spatial_registered"], ad1.obsm["spatial"])
     assert out[1].obsm["spatial_registered"].shape == ad2.obsm["spatial"].shape
     assert out[2].obsm["spatial_registered"].shape == ad3.obsm["spatial"].shape
+    assert out[0].X is ad1.X
+    assert out[1].X is ad2.X
+    assert out[2].X is ad3.X
 
 
 def test_register_stalign_success_with_uniform_intensity(
@@ -383,6 +392,8 @@ def test_register_stalign_success_with_uniform_intensity(
 
     np.testing.assert_allclose(out[0].obsm["spatial_registered"], ad1.obsm["spatial"] + 3.0)
     np.testing.assert_allclose(out[1].obsm["spatial_registered"], ad2.obsm["spatial"])
+    assert out[0].X is ad1.X
+    assert out[1].X is ad2.X
 
 
 def test_register_slices_defaults_to_paste_when_params_none(
