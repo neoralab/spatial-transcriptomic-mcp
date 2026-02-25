@@ -866,3 +866,398 @@ async def test_analyze_rna_velocity_unknown_method_raises_parameter_error(
     )
     with pytest.raises(ParameterError, match="Unknown velocity method"):
         await vel.analyze_rna_velocity("vel-s4", _VelCtx(adata), params)
+
+
+def test_infer_spatial_trajectory_cellrank_disables_spatial_when_coords_missing(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    cleanup_called = {"v": False}
+
+    monkeypatch.setattr(
+        traj,
+        "ensure_cellrank_compat",
+        lambda: lambda: cleanup_called.__setitem__("v", True),
+    )
+    monkeypatch.setattr(traj, "get_spatial_key", lambda _a: None)
+    _install_fake_cellrank(
+        monkeypatch,
+        n_obs=adata.n_obs,
+        terminal_categories=["T0"],
+        fail_macrostates=False,
+    )
+
+    out = traj.infer_spatial_trajectory_cellrank(adata, spatial_weight=0.9, n_states=3)
+    assert out is adata
+    assert "pseudotime" in adata.obs
+    assert cleanup_called["v"] is True
+
+
+def test_infer_spatial_trajectory_cellrank_velovi_missing_essential_data_raises(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    adata.uns["velocity_method"] = "velovi"
+
+    monkeypatch.setattr(traj, "ensure_cellrank_compat", lambda: (lambda: None))
+    monkeypatch.setattr(traj, "get_spatial_key", lambda _a: "spatial")
+    monkeypatch.setattr(traj, "has_velovi_essential_data", lambda _a: False)
+    _install_fake_cellrank(
+        monkeypatch,
+        n_obs=adata.n_obs,
+        terminal_categories=["T0"],
+        fail_macrostates=False,
+    )
+
+    with pytest.raises(ProcessingError, match="VELOVI velocity data not found"):
+        traj.infer_spatial_trajectory_cellrank(adata)
+
+
+def test_infer_spatial_trajectory_cellrank_predict_terminal_value_error_bubbles(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    cleanup_called = {"v": False}
+
+    monkeypatch.setattr(
+        traj,
+        "ensure_cellrank_compat",
+        lambda: lambda: cleanup_called.__setitem__("v", True),
+    )
+    monkeypatch.setattr(traj, "get_spatial_key", lambda _a: None)
+
+    class _Kernel:
+        def __init__(self, *_a, **_k):
+            pass
+
+        def compute_transition_matrix(self):
+            return self
+
+        def __mul__(self, _other):
+            return self
+
+        def __rmul__(self, _other):
+            return self
+
+        def __add__(self, _other):
+            return self
+
+    class _GPCCA:
+        def __init__(self, _kernel):
+            self.macrostates = pd.Series(pd.Categorical(["M0"] * adata.n_obs))
+
+        def compute_eigendecomposition(self):
+            return None
+
+        def compute_macrostates(self, n_states: int):
+            self.n_states = n_states
+
+        def predict_terminal_states(self, method: str = "stability"):
+            del method
+            raise ValueError("unexpected state error")
+
+    fake_cr = ModuleType("cellrank")
+    fake_cr.kernels = SimpleNamespace(
+        VelocityKernel=_Kernel,
+        ConnectivityKernel=_Kernel,
+        PrecomputedKernel=_Kernel,
+    )
+    fake_cr.estimators = SimpleNamespace(GPCCA=_GPCCA)
+    monkeypatch.setitem(__import__("sys").modules, "cellrank", fake_cr)
+
+    with pytest.raises(ValueError, match="unexpected state error"):
+        traj.infer_spatial_trajectory_cellrank(adata, spatial_weight=0.0)
+    assert cleanup_called["v"] is True
+
+
+def test_infer_spatial_trajectory_cellrank_wraps_fate_probability_failures(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    monkeypatch.setattr(traj, "ensure_cellrank_compat", lambda: (lambda: None))
+    monkeypatch.setattr(traj, "get_spatial_key", lambda _a: None)
+
+    class _Kernel:
+        def __init__(self, *_a, **_k):
+            pass
+
+        def compute_transition_matrix(self):
+            return self
+
+        def __mul__(self, _other):
+            return self
+
+        def __rmul__(self, _other):
+            return self
+
+        def __add__(self, _other):
+            return self
+
+    class _TerminalSeries:
+        cat = SimpleNamespace(categories=["T0"])
+
+    class _GPCCA:
+        def __init__(self, _kernel):
+            self.terminal_states = _TerminalSeries()
+            self.macrostates = pd.Series(pd.Categorical(["M0"] * adata.n_obs))
+
+        def compute_eigendecomposition(self):
+            return None
+
+        def compute_macrostates(self, n_states: int):
+            self.n_states = n_states
+
+        def predict_terminal_states(self, method: str = "stability"):
+            del method
+            return None
+
+        def compute_fate_probabilities(self):
+            raise RuntimeError("fate failed")
+
+    fake_cr = ModuleType("cellrank")
+    fake_cr.kernels = SimpleNamespace(
+        VelocityKernel=_Kernel,
+        ConnectivityKernel=_Kernel,
+        PrecomputedKernel=_Kernel,
+    )
+    fake_cr.estimators = SimpleNamespace(GPCCA=_GPCCA)
+    monkeypatch.setitem(__import__("sys").modules, "cellrank", fake_cr)
+
+    with pytest.raises(ProcessingError, match="fate probability computation failed"):
+        traj.infer_spatial_trajectory_cellrank(adata, spatial_weight=0.0)
+
+
+def test_infer_spatial_trajectory_cellrank_raises_when_no_terminal_or_macrostates(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    monkeypatch.setattr(traj, "ensure_cellrank_compat", lambda: (lambda: None))
+    monkeypatch.setattr(traj, "get_spatial_key", lambda _a: None)
+
+    class _Kernel:
+        def __init__(self, *_a, **_k):
+            pass
+
+        def compute_transition_matrix(self):
+            return self
+
+        def __mul__(self, _other):
+            return self
+
+        def __rmul__(self, _other):
+            return self
+
+        def __add__(self, _other):
+            return self
+
+    class _EmptyTerminalSeries:
+        cat = SimpleNamespace(categories=[])
+
+    class _GPCCA:
+        def __init__(self, _kernel):
+            self.terminal_states = _EmptyTerminalSeries()
+            self.macrostates = None
+
+        def compute_eigendecomposition(self):
+            return None
+
+        def compute_macrostates(self, n_states: int):
+            self.n_states = n_states
+
+        def predict_terminal_states(self, method: str = "stability"):
+            del method
+            return None
+
+    fake_cr = ModuleType("cellrank")
+    fake_cr.kernels = SimpleNamespace(
+        VelocityKernel=_Kernel,
+        ConnectivityKernel=_Kernel,
+        PrecomputedKernel=_Kernel,
+    )
+    fake_cr.estimators = SimpleNamespace(GPCCA=_GPCCA)
+    monkeypatch.setitem(__import__("sys").modules, "cellrank", fake_cr)
+
+    with pytest.raises(ProcessingError, match="could not compute terminal states"):
+        traj.infer_spatial_trajectory_cellrank(adata, spatial_weight=0.0)
+
+
+def test_infer_pseudotime_palantir_valid_root_populates_outputs(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    adata.obsm["X_pca"] = np.ones((adata.n_obs, 5))
+    monkeypatch.setattr(traj, "ensure_pca", lambda *_a, **_k: None)
+    captured: dict[str, object] = {}
+
+    class _PR:
+        pseudotime = pd.Series(np.linspace(0, 1, adata.n_obs), index=adata.obs_names)
+        branch_probs = np.ones((adata.n_obs, 2))
+
+    fake_palantir = ModuleType("palantir")
+    fake_palantir.utils = SimpleNamespace(
+        run_diffusion_maps=lambda *_a, **_k: {"EigenVectors": adata.obsm["X_pca"]}
+    )
+
+    def _fake_run_palantir(_ms_data, start_cell, num_waypoints):
+        captured["start_cell"] = start_cell
+        captured["num_waypoints"] = num_waypoints
+        return _PR()
+
+    fake_palantir.core = SimpleNamespace(run_palantir=_fake_run_palantir)
+    monkeypatch.setitem(__import__("sys").modules, "palantir", fake_palantir)
+
+    out = traj.infer_pseudotime_palantir(
+        adata, root_cells=[adata.obs_names[1]], num_waypoints=123
+    )
+    assert out is adata
+    assert captured["start_cell"] == adata.obs_names[1]
+    assert captured["num_waypoints"] == 123
+    assert "palantir_pseudotime" in adata.obs
+    assert "palantir_branch_probs" in adata.obsm
+
+
+def test_compute_dpt_trajectory_valid_root_and_fillna(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    monkeypatch.setattr(traj, "ensure_pca", lambda *_a, **_k: None)
+    monkeypatch.setattr(traj, "ensure_neighbors", lambda *_a, **_k: None)
+    monkeypatch.setattr(traj, "ensure_diffmap", lambda *_a, **_k: None)
+
+    fake_scanpy = ModuleType("scanpy")
+    fake_scanpy.tl = SimpleNamespace(
+        dpt=lambda _a: _a.obs.__setitem__(
+            "dpt_pseudotime", pd.Series([0.2, np.nan] + [0.1] * (_a.n_obs - 2), index=_a.obs_names)
+        )
+    )
+    monkeypatch.setitem(__import__("sys").modules, "scanpy", fake_scanpy)
+
+    root = adata.obs_names[3]
+    out = traj.compute_dpt_trajectory(adata, root_cells=[root])
+    assert out is adata
+    assert int(adata.uns["iroot"]) == 3
+    assert adata.obs["dpt_pseudotime"].isna().sum() == 0
+
+
+def test_compute_dpt_trajectory_raises_when_dpt_column_missing(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    monkeypatch.setattr(traj, "ensure_pca", lambda *_a, **_k: None)
+    monkeypatch.setattr(traj, "ensure_neighbors", lambda *_a, **_k: None)
+    monkeypatch.setattr(traj, "ensure_diffmap", lambda *_a, **_k: None)
+
+    fake_scanpy = ModuleType("scanpy")
+    fake_scanpy.tl = SimpleNamespace(dpt=lambda *_a, **_k: None)
+    monkeypatch.setitem(__import__("sys").modules, "scanpy", fake_scanpy)
+
+    with pytest.raises(ProcessingError, match="did not create 'dpt_pseudotime'"):
+        traj.compute_dpt_trajectory(adata)
+
+
+@pytest.mark.asyncio
+async def test_analyze_trajectory_cellrank_success_records_cellrank_specific_metadata(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    adata.uns["velocity_graph"] = True
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(traj, "require", lambda *_a, **_k: None)
+    monkeypatch.setitem(__import__("sys").modules, "cellrank", ModuleType("cellrank"))
+
+    def _fake_infer(_adata, **_kwargs):
+        _adata.obs["pseudotime"] = np.linspace(0, 1, _adata.n_obs)
+        _adata.obs["terminal_states"] = pd.Categorical(["T0"] * _adata.n_obs)
+        _adata.obs["macrostates"] = pd.Categorical(["M0"] * _adata.n_obs)
+        _adata.obsm["fate_probabilities"] = np.ones((_adata.n_obs, 1), dtype=float)
+        _adata.uns["velocity_method"] = "scvelo"
+        return _adata
+
+    monkeypatch.setattr(traj, "infer_spatial_trajectory_cellrank", _fake_infer)
+    monkeypatch.setattr(
+        "chatspatial.utils.adata_utils.store_analysis_metadata",
+        lambda _adata, **kwargs: captured.update(kwargs),
+    )
+    monkeypatch.setattr(
+        "chatspatial.utils.results_export.export_analysis_result",
+        lambda *_a, **_k: [],
+    )
+
+    out = await traj.analyze_trajectory(
+        "t-cellrank",
+        _VelCtx(adata),
+        traj.TrajectoryParameters(
+            method="cellrank",
+            root_cells=[adata.obs_names[0]],
+            cellrank_n_states=4,
+            cellrank_kernel_weights=(0.7, 0.3),
+            spatial_weight=0.25,
+        ),
+    )
+
+    assert out.method == "cellrank"
+    assert out.pseudotime_key == "pseudotime"
+    assert "terminal_states" in captured["results_keys"]["obs"]
+    assert "macrostates" in captured["results_keys"]["obs"]
+    assert "fate_probabilities" in captured["results_keys"]["obsm"]
+    assert "velocity_method" in captured["results_keys"]["uns"]
+    assert captured["parameters"]["kernel_weights"] == (0.7, 0.3)
+    assert captured["parameters"]["n_states"] == 4
+    assert captured["parameters"]["root_cells"] == [adata.obs_names[0]]
+
+
+@pytest.mark.asyncio
+async def test_analyze_trajectory_cellrank_wraps_inference_errors(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    adata.uns["velocity_graph"] = True
+    monkeypatch.setattr(traj, "require", lambda *_a, **_k: None)
+    monkeypatch.setitem(__import__("sys").modules, "cellrank", ModuleType("cellrank"))
+    monkeypatch.setattr(
+        traj,
+        "infer_spatial_trajectory_cellrank",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("cellrank boom")),
+    )
+
+    with pytest.raises(ProcessingError, match="CellRank trajectory inference failed"):
+        await traj.analyze_trajectory(
+            "t-cellrank-fail",
+            _VelCtx(adata),
+            traj.TrajectoryParameters(method="cellrank"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_analyze_trajectory_palantir_wraps_inference_errors(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    monkeypatch.setattr(
+        traj,
+        "infer_pseudotime_palantir",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("palantir boom")),
+    )
+
+    with pytest.raises(ProcessingError, match="Palantir trajectory inference failed"):
+        await traj.analyze_trajectory(
+            "t-palantir-fail",
+            _VelCtx(adata),
+            traj.TrajectoryParameters(method="palantir"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_analyze_trajectory_raises_when_method_returns_without_pseudotime(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    monkeypatch.setattr(traj, "compute_dpt_trajectory", lambda _adata, root_cells=None: _adata)
+
+    with pytest.raises(ProcessingError, match="Failed to compute pseudotime"):
+        await traj.analyze_trajectory(
+            "t-no-pt",
+            _VelCtx(adata),
+            traj.TrajectoryParameters(method="dpt"),
+        )
