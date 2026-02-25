@@ -391,3 +391,335 @@ async def test_cellrank_fate_heatmap_success_and_missing_genes_error(
             ),
             context=DummyCtx(),
         )
+
+
+@pytest.mark.asyncio
+async def test_pseudotime_plot_feature_list_single_panel_and_title(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    adata.obs["pt"] = np.linspace(0, 1, adata.n_obs)
+    monkeypatch.setattr(viz_traj, "infer_basis", lambda *_a, **_k: "umap")
+
+    def _embedding(*_args, **kwargs):
+        kwargs["ax"].scatter([0], [0], c=[1.0])
+
+    monkeypatch.setattr(viz_traj.sc.pl, "embedding", _embedding)
+
+    fig = await viz_traj._create_trajectory_pseudotime_plot(
+        adata,
+        VisualizationParameters(
+            plot_type="trajectory",
+            subtype="pseudotime",
+            feature=["pt"],
+            show_colorbar=False,
+            title="PT Title",
+        ),
+        context=DummyCtx(),
+    )
+    assert fig._suptitle is not None
+    assert fig._suptitle.get_text() == "PT Title"
+    fig.clf()
+
+
+@pytest.mark.asyncio
+async def test_cellrank_fate_map_missing_fate_and_title_branch(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    monkeypatch.setattr(viz_traj, "require", lambda *_a, **_k: None)
+    _install_fake_cellrank(monkeypatch)
+
+    with pytest.raises(DataNotFoundError, match="CellRank fate probabilities not found"):
+        await viz_traj._create_cellrank_fate_map(
+            adata,
+            VisualizationParameters(plot_type="trajectory", subtype="fate_map"),
+            context=DummyCtx(),
+        )
+
+    adata.obsm["lineages_fwd"] = np.ones((adata.n_obs, 2), dtype=float)
+    fake_cr = ModuleType("cellrank")
+    fake_cr.pl = SimpleNamespace(
+        aggregate_fate_probabilities=lambda *_a, **_k: plt.figure()
+    )
+    monkeypatch.setitem(sys.modules, "cellrank", fake_cr)
+
+    fig = await viz_traj._create_cellrank_fate_map(
+        adata,
+        VisualizationParameters(
+            plot_type="trajectory",
+            subtype="fate_map",
+            cluster_key="group",
+            title="Fate Title",
+        ),
+        context=DummyCtx(),
+    )
+    assert fig._suptitle is not None
+    assert fig._suptitle.get_text() == "Fate Title"
+    fig.clf()
+
+
+@pytest.mark.asyncio
+async def test_cellrank_gene_trends_edge_branches(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    adata.obs["latent_time"] = np.linspace(0, 1, adata.n_obs)
+    monkeypatch.setattr(viz_traj, "require", lambda *_a, **_k: None)
+    _install_fake_cellrank(monkeypatch)
+
+    with pytest.raises(DataNotFoundError, match="fate probabilities not found"):
+        await viz_traj._create_cellrank_gene_trends(
+            adata,
+            VisualizationParameters(plot_type="trajectory", subtype="gene_trends"),
+            context=DummyCtx(),
+        )
+
+    adata.obsm["lineages_fwd"] = np.ones((adata.n_obs, 2), dtype=float)
+    with pytest.raises(DataNotFoundError, match="None of the specified genes found"):
+        await viz_traj._create_cellrank_gene_trends(
+            adata,
+            VisualizationParameters(
+                plot_type="trajectory",
+                subtype="gene_trends",
+                feature="missing_gene",
+            ),
+            context=DummyCtx(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_cellrank_gene_trends_defaults_and_title(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    adata.obsm["lineages_fwd"] = np.ones((adata.n_obs, 2), dtype=float)
+    adata.obs["latent_time"] = np.linspace(0, 1, adata.n_obs)
+    adata.var["highly_variable"] = [i < 4 for i in range(adata.n_vars)]
+
+    monkeypatch.setattr(viz_traj, "require", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        traj_tool,
+        "prepare_gam_model_for_visualization",
+        lambda *_a, **_k: ("fake_model", ["L1"]),
+    )
+
+    fake_cr = ModuleType("cellrank")
+    captured: dict[str, object] = {}
+
+    def _gene_trends(*_args, **kwargs):
+        captured["genes"] = kwargs.get("genes")
+        plt.figure()
+
+    fake_cr.pl = SimpleNamespace(gene_trends=_gene_trends)
+    monkeypatch.setitem(sys.modules, "cellrank", fake_cr)
+
+    fig = await viz_traj._create_cellrank_gene_trends(
+        adata,
+        VisualizationParameters(
+            plot_type="trajectory",
+            subtype="gene_trends",
+            title="GT Title",
+        ),
+        context=DummyCtx(),
+    )
+    assert captured["genes"] == ["gene_0", "gene_1", "gene_2", "gene_3"]
+    assert fig._suptitle is not None
+    assert fig._suptitle.get_text() == "GT Title"
+    fig.clf()
+
+
+@pytest.mark.asyncio
+async def test_cellrank_fate_heatmap_edge_branches(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    monkeypatch.setattr(viz_traj, "require", lambda *_a, **_k: None)
+    _install_fake_cellrank(monkeypatch)
+
+    with pytest.raises(DataNotFoundError, match="fate probabilities not found"):
+        await viz_traj._create_cellrank_fate_heatmap(
+            adata,
+            VisualizationParameters(plot_type="trajectory", subtype="fate_heatmap"),
+            context=DummyCtx(),
+        )
+
+    adata.obsm["lineages_fwd"] = np.ones((adata.n_obs, 2), dtype=float)
+    with pytest.raises(DataNotFoundError, match="No pseudotime found for fate heatmap"):
+        await viz_traj._create_cellrank_fate_heatmap(
+            adata,
+            VisualizationParameters(plot_type="trajectory", subtype="fate_heatmap"),
+            context=DummyCtx(),
+        )
+
+    adata.obs["latent_time"] = np.linspace(0, 1, adata.n_obs)
+    monkeypatch.setattr(
+        traj_tool,
+        "prepare_gam_model_for_visualization",
+        lambda *_a, **_k: ("fake_model", ["L1"]),
+    )
+    fake_cr = ModuleType("cellrank")
+    captured: dict[str, object] = {}
+
+    def _heatmap(*_args, **kwargs):
+        captured["genes"] = kwargs.get("genes")
+        plt.figure()
+
+    fake_cr.pl = SimpleNamespace(heatmap=_heatmap)
+    monkeypatch.setitem(sys.modules, "cellrank", fake_cr)
+
+    fig = await viz_traj._create_cellrank_fate_heatmap(
+        adata,
+        VisualizationParameters(
+            plot_type="trajectory",
+            subtype="fate_heatmap",
+            feature="gene_0",
+            title="FH Title",
+        ),
+        context=DummyCtx(),
+    )
+    assert captured["genes"] == ["gene_0"]
+    assert fig._suptitle is not None
+    assert fig._suptitle.get_text() == "FH Title"
+    fig.clf()
+
+
+@pytest.mark.asyncio
+async def test_cellrank_fate_heatmap_defaults_without_hvg_uses_var_names(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    adata.obsm["lineages_fwd"] = np.ones((adata.n_obs, 2), dtype=float)
+    adata.obs["latent_time"] = np.linspace(0, 1, adata.n_obs)
+
+    monkeypatch.setattr(viz_traj, "require", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        traj_tool,
+        "prepare_gam_model_for_visualization",
+        lambda *_a, **_k: ("fake_model", ["L1"]),
+    )
+
+    fake_cr = ModuleType("cellrank")
+    captured: dict[str, object] = {}
+
+    def _heatmap(*_args, **kwargs):
+        captured["genes"] = kwargs.get("genes")
+        plt.figure()
+
+    fake_cr.pl = SimpleNamespace(heatmap=_heatmap)
+    monkeypatch.setitem(sys.modules, "cellrank", fake_cr)
+
+    fig = await viz_traj._create_cellrank_fate_heatmap(
+        adata,
+        VisualizationParameters(plot_type="trajectory", subtype="fate_heatmap"),
+        context=DummyCtx(),
+    )
+    assert captured["genes"] == list(adata.var_names[:50])
+    fig.clf()
+
+
+@pytest.mark.asyncio
+async def test_palantir_single_panel_and_ndarray_fates(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    adata.obs["palantir_pseudotime"] = np.linspace(0, 1, adata.n_obs)
+    monkeypatch.setattr(viz_traj, "infer_basis", lambda *_a, **_k: "umap")
+    calls: list[str] = []
+
+    def _embedding(*_args, **kwargs):
+        calls.append(str(kwargs.get("color")))
+        kwargs["ax"].scatter([0], [0], c=[1.0])
+
+    monkeypatch.setattr(viz_traj.sc.pl, "embedding", _embedding)
+
+    fig_single = await viz_traj._create_palantir_results(
+        adata,
+        VisualizationParameters(plot_type="trajectory", subtype="palantir"),
+        context=DummyCtx(),
+    )
+    assert len(fig_single.axes) == 1
+    fig_single.clf()
+
+    adata.obsm["palantir_branch_probs"] = np.column_stack(
+        [np.linspace(0.6, 0.2, adata.n_obs), np.linspace(0.4, 0.8, adata.n_obs)]
+    )
+    fig_nd = await viz_traj._create_palantir_results(
+        adata,
+        VisualizationParameters(plot_type="trajectory", subtype="palantir"),
+        context=DummyCtx(),
+    )
+    assert "_dominant_fate" in calls
+    assert "_dominant_fate" not in adata.obs.columns
+    fig_nd.clf()
+
+
+@pytest.mark.asyncio
+async def test_cellrank_gene_trends_default_without_hvg_uses_var_names(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    adata.obsm["lineages_fwd"] = np.ones((adata.n_obs, 2), dtype=float)
+    adata.obs["latent_time"] = np.linspace(0, 1, adata.n_obs)
+    if "highly_variable" in adata.var.columns:
+        del adata.var["highly_variable"]
+
+    monkeypatch.setattr(viz_traj, "require", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        traj_tool,
+        "prepare_gam_model_for_visualization",
+        lambda *_a, **_k: ("fake_model", ["L1"]),
+    )
+
+    fake_cr = ModuleType("cellrank")
+    captured: dict[str, object] = {}
+
+    def _gene_trends(*_args, **kwargs):
+        captured["genes"] = kwargs.get("genes")
+        plt.figure()
+
+    fake_cr.pl = SimpleNamespace(gene_trends=_gene_trends)
+    monkeypatch.setitem(sys.modules, "cellrank", fake_cr)
+
+    fig = await viz_traj._create_cellrank_gene_trends(
+        adata,
+        VisualizationParameters(plot_type="trajectory", subtype="gene_trends"),
+        context=DummyCtx(),
+    )
+    assert captured["genes"] == list(adata.var_names[:6])
+    fig.clf()
+
+
+@pytest.mark.asyncio
+async def test_cellrank_fate_heatmap_defaults_with_hvg_uses_hvg_genes(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    adata.obsm["lineages_fwd"] = np.ones((adata.n_obs, 2), dtype=float)
+    adata.obs["latent_time"] = np.linspace(0, 1, adata.n_obs)
+    adata.var["highly_variable"] = [i < 3 for i in range(adata.n_vars)]
+
+    monkeypatch.setattr(viz_traj, "require", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        traj_tool,
+        "prepare_gam_model_for_visualization",
+        lambda *_a, **_k: ("fake_model", ["L1"]),
+    )
+
+    fake_cr = ModuleType("cellrank")
+    captured: dict[str, object] = {}
+
+    def _heatmap(*_args, **kwargs):
+        captured["genes"] = kwargs.get("genes")
+        plt.figure()
+
+    fake_cr.pl = SimpleNamespace(heatmap=_heatmap)
+    monkeypatch.setitem(sys.modules, "cellrank", fake_cr)
+
+    fig = await viz_traj._create_cellrank_fate_heatmap(
+        adata,
+        VisualizationParameters(plot_type="trajectory", subtype="fate_heatmap"),
+        context=DummyCtx(),
+    )
+    assert captured["genes"] == ["gene_0", "gene_1", "gene_2"]
+    fig.clf()

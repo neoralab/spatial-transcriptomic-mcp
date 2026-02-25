@@ -44,10 +44,14 @@ def test_resolve_score_column_validates_and_defaults(minimal_spatial_adata):
     adata.obs["A_score"] = 0.2
     cols = ["A_score"]
     assert viz_enrich._resolve_score_column(adata, None, cols) == "A_score"
+    assert viz_enrich._resolve_score_column(adata, "A_score", cols) == "A_score"
     assert viz_enrich._resolve_score_column(adata, "A", cols) == "A_score"
 
     with pytest.raises(DataNotFoundError, match="Score column 'missing' not found"):
         viz_enrich._resolve_score_column(adata, "missing", cols)
+
+    with pytest.raises(DataNotFoundError, match="No enrichment scores found"):
+        viz_enrich._resolve_score_column(adata, None, [])
 
 
 @pytest.mark.asyncio
@@ -295,6 +299,32 @@ async def test_create_pathway_enrichment_visualization_unknown_subtype_error(
         )
 
 
+@pytest.mark.asyncio
+async def test_create_pathway_enrichment_visualization_routes_enrichment_plot_and_dotplot(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    adata.uns["gsea_results"] = {"PathA": {"Adjusted P-value": 0.03, "RES": [0.1, 0.2]}}
+    sentinel_enrichment = object()
+    sentinel_dot = object()
+
+    monkeypatch.setattr(viz_enrich, "_create_gsea_enrichment_plot", lambda *_a, **_k: sentinel_enrichment)
+    monkeypatch.setattr(viz_enrich, "_create_gsea_dotplot", lambda *_a, **_k: sentinel_dot)
+
+    out_enrich = await viz_enrich.create_pathway_enrichment_visualization(
+        adata,
+        VisualizationParameters(plot_type="enrichment", subtype="enrichment_plot"),
+        context=DummyCtx(),
+    )
+    out_dot = await viz_enrich.create_pathway_enrichment_visualization(
+        adata,
+        VisualizationParameters(plot_type="enrichment", subtype="dotplot"),
+        context=DummyCtx(),
+    )
+    assert out_enrich is sentinel_enrichment
+    assert out_dot is sentinel_dot
+
+
 def test_create_enrichment_violin_requires_cluster_key(minimal_spatial_adata):
     adata = minimal_spatial_adata.copy()
     adata.obs["A_score"] = 0.3
@@ -321,6 +351,22 @@ def test_create_enrichment_violin_multifeature_layout(minimal_spatial_adata):
         score_cols=["A_score", "B_score"],
     )
     assert len(fig.axes) == 2
+    fig.clf()
+
+
+def test_create_enrichment_violin_defaults_to_score_cols_and_single_axis(minimal_spatial_adata):
+    adata = minimal_spatial_adata.copy()
+    adata.obs["A_score"] = np.linspace(0.0, 1.0, adata.n_obs)
+    fig = viz_enrich._create_enrichment_violin(
+        adata,
+        VisualizationParameters(
+            plot_type="enrichment",
+            subtype="violin",
+            cluster_key="group",
+        ),
+        score_cols=["A_score"],
+    )
+    assert len(fig.axes) == 1
     fig.clf()
 
 
@@ -381,6 +427,47 @@ async def test_create_enrichment_spatial_multifeature_and_single_feature_paths(
     fig_single.clf()
 
 
+@pytest.mark.asyncio
+async def test_create_enrichment_spatial_multifeature_suffix_resolution_and_missing_error(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    adata.obs["A_score"] = np.linspace(0.0, 1.0, adata.n_obs)
+    adata.obs["B_score"] = np.linspace(1.0, 0.0, adata.n_obs)
+
+    seen: list[str] = []
+    monkeypatch.setattr(
+        viz_enrich,
+        "plot_spatial_feature",
+        lambda _adata, feature, ax, params: seen.append(feature) or ax.scatter([0], [0], c=[1.0]),
+    )
+
+    fig = await viz_enrich._create_enrichment_spatial(
+        adata,
+        VisualizationParameters(
+            plot_type="enrichment",
+            subtype="spatial",
+            feature=["A", "B"],
+        ),
+        score_cols=["A_score", "B_score"],
+        context=None,
+    )
+    assert seen[:2] == ["A_score", "B_score"]
+    fig.clf()
+
+    with pytest.raises(DataNotFoundError, match="None of the specified scores found"):
+        await viz_enrich._create_enrichment_spatial(
+            adata,
+            VisualizationParameters(
+                plot_type="enrichment",
+                subtype="spatial",
+                feature=["X", "Y"],
+            ),
+            score_cols=["A_score", "B_score"],
+            context=None,
+        )
+
+
 def test_create_enrichmap_spatial_routes_cross_and_wraps_errors(
     minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
 ):
@@ -410,6 +497,29 @@ def test_create_enrichmap_spatial_routes_cross_and_wraps_errors(
         viz_enrich._create_enrichmap_spatial(
             adata,
             VisualizationParameters(plot_type="enrichment", subtype="spatial_score", feature="A"),
+            score_cols=["A_score"],
+        )
+
+
+def test_create_enrichmap_spatial_reraises_data_not_found(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    fake_em = ModuleType("enrichmap")
+    monkeypatch.setitem(sys.modules, "enrichmap", fake_em)
+    monkeypatch.setattr(
+        viz_enrich,
+        "_create_enrichmap_single_score",
+        lambda *_a, **_k: (_ for _ in ()).throw(DataNotFoundError("missing score")),
+    )
+    with pytest.raises(DataNotFoundError, match="missing score"):
+        viz_enrich._create_enrichmap_spatial(
+            adata,
+            VisualizationParameters(
+                plot_type="enrichment",
+                subtype="spatial_score",
+                feature="A",
+            ),
             score_cols=["A_score"],
         )
 
@@ -484,6 +594,23 @@ def test_create_enrichmap_single_score_routes_all_supported_subtypes(
 
     assert calls == ["correlogram", "variogram", "spatial_score"]
 
+    fig2 = viz_enrich._create_enrichmap_single_score(
+        adata,
+        VisualizationParameters(
+            plot_type="enrichment",
+            subtype="spatial_score",
+            feature="A",
+            figure_size=(7, 4),
+            dpi=150,
+        ),
+        library_id="sample_1",
+        em=_EM(),
+        context=None,
+    )
+    assert tuple(fig2.get_size_inches()) == pytest.approx((7.0, 4.0))
+    assert fig2.get_dpi() == 150
+    fig2.clf()
+
 
 def test_create_gsea_enrichment_plot_validation_and_success(monkeypatch: pytest.MonkeyPatch):
     with pytest.raises(DataNotFoundError, match="requires running enrichment scores"):
@@ -515,6 +642,20 @@ def test_create_gsea_enrichment_plot_validation_and_success(monkeypatch: pytest.
             VisualizationParameters(plot_type="enrichment", subtype="enrichment_plot"),
         )
 
+    fig_path = viz_enrich._create_gsea_enrichment_plot(
+        {
+            "PathA": {"RES": [0.1, 0.2], "NES": 1.1, "pval": 0.02},
+            "PathB": {"RES": [0.2, 0.3], "NES": 1.3, "pval": 0.01},
+        },
+        VisualizationParameters(
+            plot_type="enrichment",
+            subtype="enrichment_plot",
+            feature="PathB",
+        ),
+    )
+    assert fig_path is not None
+    fig_path.clf()
+
 
 def test_create_gsea_dotplot_nested_and_error_wrap(monkeypatch: pytest.MonkeyPatch):
     fake_gp = ModuleType("gseapy")
@@ -541,6 +682,41 @@ def test_create_gsea_dotplot_nested_and_error_wrap(monkeypatch: pytest.MonkeyPat
             VisualizationParameters(plot_type="enrichment", subtype="dotplot"),
         )
 
+    with pytest.raises(DataNotFoundError, match="No enrichment results found"):
+        viz_enrich._create_gsea_dotplot(
+            {},
+            VisualizationParameters(plot_type="enrichment", subtype="dotplot"),
+        )
+
+
+def test_create_gsea_barplot_success_empty_and_figure_size(monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, object] = {}
+    fake_gp = ModuleType("gseapy")
+
+    def _fake_barplot(**kwargs):
+        captured["figsize"] = kwargs.get("figsize")
+        return _FakeAxes()
+
+    fake_gp.barplot = _fake_barplot
+    monkeypatch.setitem(sys.modules, "gseapy", fake_gp)
+
+    fig = viz_enrich._create_gsea_barplot(
+        {"PathA": {"Adjusted P-value": 0.01}},
+        VisualizationParameters(
+            plot_type="enrichment",
+            subtype="barplot",
+            figure_size=(9, 5),
+        ),
+    )
+    assert captured["figsize"] == (9.0, 5.0)
+    fig.clf()
+
+    with pytest.raises(DataNotFoundError, match="No enrichment results found"):
+        viz_enrich._create_gsea_barplot(
+            {},
+            VisualizationParameters(plot_type="enrichment", subtype="barplot"),
+        )
+
 
 def test_utility_branches_for_dataframe_conversion_and_feature_resolution():
     assert viz_enrich._resolve_feature_list(None, pd.Index(["A"]), ["A_score"]) == []
@@ -561,3 +737,9 @@ def test_utility_branches_for_dataframe_conversion_and_feature_resolution():
     )
     assert x_col == "Group"
     assert set(df["Group"]) == {"A", "B"}
+
+    assert viz_enrich._find_pvalue_column(pd.DataFrame({"x": [1]})) == "Adjusted P-value"
+
+    df3 = pd.DataFrame({"score": [1, 2]}, index=pd.Index(["P1", "P2"], name="path"))
+    viz_enrich._ensure_term_column(df3)
+    assert list(df3["Term"]) == ["P1", "P2"]

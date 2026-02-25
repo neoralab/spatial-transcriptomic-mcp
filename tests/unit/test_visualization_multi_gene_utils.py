@@ -41,6 +41,14 @@ async def test_create_multi_gene_visualization_requires_requested_basis(minimal_
                 plot_type="expression", subtype="heatmap", feature=["gene_0"], basis="umap"
             ),
         )
+    adata.obsm.pop("spatial", None)
+    with pytest.raises(DataNotFoundError, match="Spatial coordinates not found"):
+        await viz_mg.create_multi_gene_visualization(
+            adata,
+            VisualizationParameters(
+                plot_type="expression", subtype="heatmap", feature=["gene_0"], basis="spatial"
+            ),
+        )
 
 
 @pytest.mark.asyncio
@@ -108,7 +116,11 @@ async def test_create_multi_gene_visualization_umap_branch(minimal_spatial_adata
     fig = await viz_mg.create_multi_gene_visualization(
         adata,
         VisualizationParameters(
-            plot_type="expression", subtype="heatmap", basis="umap", feature=["gene_2"]
+            plot_type="expression",
+            subtype="heatmap",
+            basis="umap",
+            feature=["gene_2"],
+            color_scale="log",
         ),
         context=DummyCtx(),
     )
@@ -132,6 +144,23 @@ def test_parse_lr_pairs_supports_multiple_sources(minimal_spatial_adata):
         VisualizationParameters(plot_type="interaction"),
     )
     assert out == [("A", "B"), ("C", "D")]
+
+    adata2 = minimal_spatial_adata.copy()
+    adata2.uns["detected_lr_pairs"] = [("D", "E")]
+    out2 = viz_mg._parse_lr_pairs(
+        adata2,
+        VisualizationParameters(plot_type="interaction"),
+    )
+    assert out2 == [("D", "E")]
+
+    explicit = viz_mg._parse_lr_pairs(
+        minimal_spatial_adata.copy(),
+        VisualizationParameters(
+            plot_type="interaction",
+            lr_pairs=[("LIG", "REC")],
+        ),
+    )
+    assert explicit == [("LIG", "REC")]
 
 
 def test_parse_lr_pairs_raises_when_missing(minimal_spatial_adata):
@@ -192,6 +221,47 @@ async def test_create_lr_pairs_visualization_limits_pairs_and_cleans_temp(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("color_scale", ["log", "sqrt"])
+async def test_create_lr_pairs_visualization_covers_scaling_colorbar_and_pearson(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch, color_scale: str
+):
+    adata = minimal_spatial_adata.copy()
+    monkeypatch.setattr(viz_mg, "_parse_lr_pairs", lambda *_a, **_k: [("gene_0", "gene_1")])
+    monkeypatch.setattr(viz_mg, "ensure_unique_var_names", lambda _a: None)
+
+    def _expr(_adata, gene):
+        base = np.linspace(0.0, 2.0, _adata.n_obs)
+        return base if gene == "gene_0" else base * 0.6 + 0.2
+
+    monkeypatch.setattr(viz_mg, "get_gene_expression", _expr)
+    import scipy.stats as _stats
+
+    monkeypatch.setattr(_stats, "pearsonr", lambda *_a, **_k: (0.5, 0.01))
+    monkeypatch.setattr(
+        viz_mg,
+        "plot_spatial_feature",
+        lambda _adata, ax, feature, params, show_colorbar=False: ax.scatter(
+            _adata.obsm["spatial"][:, 0], _adata.obsm["spatial"][:, 1], c=_adata.obs[feature]
+        ),
+    )
+
+    fig = await viz_mg.create_lr_pairs_visualization(
+        adata,
+        VisualizationParameters(
+            plot_type="interaction",
+            show_colorbar=True,
+            show_correlation_stats=True,
+            correlation_method="pearson",
+            color_scale=color_scale,
+        ),
+        context=DummyCtx(),
+    )
+    assert "Correlation:" in fig.axes[2].get_title()
+    assert "lr_expr_temp_viz_99_unique" not in adata.obs.columns
+    fig.clf()
+
+
+@pytest.mark.asyncio
 async def test_create_lr_pairs_visualization_without_spatial_plots_correlation_only(
     minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
 ):
@@ -242,6 +312,46 @@ async def test_create_gene_correlation_visualization_success(monkeypatch: pytest
         context=DummyCtx(),
     )
     assert "Gene Correlation" in fig._suptitle.get_text()
+    fig.clf()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("color_scale", ["log", "sqrt"])
+async def test_create_gene_correlation_visualization_color_scale_branches(
+    monkeypatch: pytest.MonkeyPatch, minimal_spatial_adata, color_scale: str
+):
+    adata = minimal_spatial_adata.copy()
+
+    async def _validated(*_a, **_k):
+        return ["gene_0", "gene_1"]
+
+    monkeypatch.setattr(viz_mg, "get_validated_features", _validated)
+    monkeypatch.setattr(
+        viz_mg,
+        "get_genes_expression",
+        lambda _adata, genes: np.vstack(
+            [np.linspace(0.0, 2.0, _adata.n_obs), np.linspace(1.0, 3.0, _adata.n_obs)]
+        ).T,
+    )
+
+    class _FakeCluster:
+        def __init__(self):
+            self.fig = plt.figure()
+
+    fake_sns = ModuleType("seaborn")
+    fake_sns.clustermap = lambda *args, **kwargs: _FakeCluster()
+    monkeypatch.setitem(sys.modules, "seaborn", fake_sns)
+
+    fig = await viz_mg.create_gene_correlation_visualization(
+        adata,
+        VisualizationParameters(
+            plot_type="expression",
+            correlation_method="pearson",
+            color_scale=color_scale,
+        ),
+        context=DummyCtx(),
+    )
+    assert fig is not None
     fig.clf()
 
 
