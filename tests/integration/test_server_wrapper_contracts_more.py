@@ -8,24 +8,33 @@ from types import SimpleNamespace
 import pytest
 
 from chatspatial.models.analysis import (
+    AnnotationResult,
     CNVResult,
     CellCommunicationResult,
     ConditionComparisonResult,
     DeconvolutionResult,
+    PreprocessingResult,
     RNAVelocityResult,
     SpatialDomainResult,
     SpatialVariableGenesResult,
     TrajectoryResult,
 )
 from chatspatial.models.data import (
+    AnnotationParameters,
     CellCommunicationParameters,
     DeconvolutionParameters,
+    PreprocessingParameters,
+    RNAVelocityParameters,
     SpatialDomainParameters,
     SpatialVariableGenesParameters,
+    TrajectoryParameters,
+    VisualizationParameters,
 )
 from chatspatial.server import (
     analyze_cell_communication,
     analyze_cnv,
+    annotate_cell_types,
+    preprocess_data,
     analyze_trajectory_data,
     analyze_velocity_data,
     compare_conditions,
@@ -89,6 +98,7 @@ async def test_visualize_data_returns_fallback_message_when_tool_returns_none(
     reset_data_manager, monkeypatch: pytest.MonkeyPatch
 ):
     async def fake_visualize(data_id, ctx, params):
+        assert isinstance(params, VisualizationParameters)
         return None
 
     fake_module = SimpleNamespace(visualize_data=fake_visualize)
@@ -188,9 +198,11 @@ async def test_velocity_and_trajectory_wrappers_save_expected_result_keys(
     reset_data_manager, monkeypatch: pytest.MonkeyPatch
 ):
     async def fake_velocity(data_id, ctx, params):
+        assert isinstance(params, RNAVelocityParameters)
         return RNAVelocityResult(data_id=data_id, velocity_computed=True, mode="stochastic")
 
     async def fake_trajectory(data_id, ctx, params):
+        assert isinstance(params, TrajectoryParameters)
         return TrajectoryResult(
             data_id=data_id,
             pseudotime_computed=True,
@@ -217,6 +229,114 @@ async def test_velocity_and_trajectory_wrappers_save_expected_result_keys(
     assert isinstance(trajectory_result, TrajectoryResult)
     assert ("d4", "rna_velocity") in saved_calls
     assert ("d4", "trajectory") in saved_calls
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_preprocess_and_annotation_wrappers_materialize_default_params(
+    reset_data_manager, monkeypatch: pytest.MonkeyPatch
+):
+    async def fake_preprocess(data_id, ctx, params):
+        assert isinstance(params, PreprocessingParameters)
+        return PreprocessingResult(
+            data_id=data_id,
+            n_cells=12,
+            n_genes=50,
+            n_hvgs=20,
+            clusters=0,
+            qc_metrics={"ok": True},
+        )
+
+    async def fake_annotate(data_id, ctx, params):
+        assert isinstance(params, AnnotationParameters)
+        return AnnotationResult(
+            data_id=data_id,
+            method=params.method,
+            output_key="cell_type_tangram",
+            confidence_key="confidence_tangram",
+            cell_types=["T", "B"],
+            counts={"T": 1, "B": 1},
+            confidence_scores={"T": 0.8, "B": 0.7},
+        )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "chatspatial.tools.preprocessing",
+        SimpleNamespace(preprocess_data=fake_preprocess),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "chatspatial.tools.annotation",
+        SimpleNamespace(annotate_cell_types=fake_annotate),
+    )
+
+    saved_calls: list[tuple[str, str]] = []
+
+    async def fake_save_result(data_id: str, result_type: str, result):
+        saved_calls.append((data_id, result_type))
+
+    monkeypatch.setattr(data_manager, "save_result", fake_save_result)
+
+    prep_result = await preprocess_data("d_default")
+    ann_result = await annotate_cell_types("d_default")
+
+    assert isinstance(prep_result, PreprocessingResult)
+    assert isinstance(ann_result, AnnotationResult)
+    assert ("d_default", "preprocessing") in saved_calls
+    assert ("d_default", "annotation") in saved_calls
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_domains_and_spatial_genes_wrappers_materialize_default_params(
+    reset_data_manager, monkeypatch: pytest.MonkeyPatch
+):
+    async def fake_domains(data_id, ctx, params):
+        assert isinstance(params, SpatialDomainParameters)
+        return SpatialDomainResult(
+            data_id=data_id,
+            method=params.method,
+            n_domains=2,
+            domain_key="spatial_domains",
+            domain_counts={"0": 5, "1": 7},
+        )
+
+    async def fake_spatial_genes(data_id, ctx, params):
+        assert isinstance(params, SpatialVariableGenesParameters)
+        return SpatialVariableGenesResult(
+            data_id=data_id,
+            method=params.method,
+            n_genes_analyzed=20,
+            n_significant_genes=4,
+            spatial_genes=["gene_1", "gene_2"],
+            results_key=f"spatial_genes_{params.method}",
+        )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "chatspatial.tools.spatial_domains",
+        SimpleNamespace(identify_spatial_domains=fake_domains),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "chatspatial.tools.spatial_genes",
+        SimpleNamespace(identify_spatial_genes=fake_spatial_genes),
+    )
+
+    saved_calls: list[tuple[str, str]] = []
+
+    async def fake_save_result(data_id: str, result_type: str, result):
+        saved_calls.append((data_id, result_type))
+
+    monkeypatch.setattr(data_manager, "save_result", fake_save_result)
+
+    domain_result = await identify_spatial_domains("d_defaults")
+    spatial_gene_result = await find_spatial_genes("d_defaults")
+
+    assert isinstance(domain_result, SpatialDomainResult)
+    assert isinstance(spatial_gene_result, SpatialVariableGenesResult)
+    assert ("d_defaults", "spatial_domains") in saved_calls
+    assert ("d_defaults", "spatial_genes") in saved_calls
 
 
 @pytest.mark.integration

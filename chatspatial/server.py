@@ -2,7 +2,7 @@
 Main server implementation for ChatSpatial using the Spatial MCP Adapter.
 """
 
-from typing import Any, Literal, Optional, cast
+from typing import Any, Literal, Optional, TypeVar, cast
 
 from mcp.server.fastmcp import Context
 
@@ -54,6 +54,13 @@ mcp, adapter = create_spatial_mcp_server("ChatSpatial")
 
 # Get data manager from adapter
 data_manager = adapter.data_manager
+
+P = TypeVar("P")
+
+
+def _resolve_params(params: Optional[P], default_factory: type[P]) -> P:
+    """Resolve optional params to a concrete model instance."""
+    return params if params is not None else default_factory()
 
 
 @mcp.tool(annotations=get_tool_annotations("load_data"))
@@ -123,7 +130,7 @@ async def load_data(
 @mcp_tool_error_handler()
 async def preprocess_data(
     data_id: str,
-    params: PreprocessingParameters = PreprocessingParameters(),
+    params: Optional[PreprocessingParameters] = None,
     context: Optional[Context] = None,
 ) -> PreprocessingResult:
     """Preprocess spatial transcriptomics data.
@@ -141,8 +148,11 @@ async def preprocess_data(
     # Lazy import (avoid name conflict with MCP tool)
     from .tools.preprocessing import preprocess_data as preprocess_func
 
+    # Resolve optional wrapper input to concrete params for tool-level contract
+    resolved_params = _resolve_params(params, PreprocessingParameters)
+
     # Call preprocessing function
-    result = await preprocess_func(data_id, ctx, params)
+    result = await preprocess_func(data_id, ctx, resolved_params)
 
     # Note: No writeback needed - adata modifications are in-place on the same object
 
@@ -212,7 +222,7 @@ async def compute_embeddings(
 @mcp_tool_error_handler()
 async def visualize_data(
     data_id: str,
-    params: VisualizationParameters = VisualizationParameters(),
+    params: Optional[VisualizationParameters] = None,
     context: Optional[Context] = None,
 ) -> str:
     """Visualize spatial transcriptomics data.
@@ -246,7 +256,8 @@ async def visualize_data(
 
     ctx = ToolContext(_data_manager=data_manager, _mcp_context=context)
 
-    result = await visualize_func(data_id, ctx, params)
+    resolved_params = _resolve_params(params, VisualizationParameters)
+    result = await visualize_func(data_id, ctx, resolved_params)
 
     if result:
         return result
@@ -258,7 +269,7 @@ async def visualize_data(
 @mcp_tool_error_handler()
 async def annotate_cell_types(
     data_id: str,
-    params: AnnotationParameters = AnnotationParameters(),
+    params: Optional[AnnotationParameters] = None,
     context: Optional[Context] = None,
 ) -> AnnotationResult:
     """Annotate cell types in spatial transcriptomics data.
@@ -280,8 +291,10 @@ async def annotate_cell_types(
     # Lazy import annotation tool (avoids slow startup)
     from .tools.annotation import annotate_cell_types
 
+    resolved_params = _resolve_params(params, AnnotationParameters)
+
     # Call annotation function with ToolContext
-    result = await annotate_cell_types(data_id, ctx, params)
+    result = await annotate_cell_types(data_id, ctx, resolved_params)
 
     # Note: No writeback needed - adata modifications are in-place on the same object
 
@@ -297,7 +310,7 @@ async def annotate_cell_types(
 @mcp_tool_error_handler()
 async def analyze_spatial_statistics(
     data_id: str,
-    params: SpatialStatisticsParameters = SpatialStatisticsParameters(),
+    params: Optional[SpatialStatisticsParameters] = None,
     context: Optional[Context] = None,
 ) -> SpatialStatisticsResult:
     """Analyze spatial statistics and autocorrelation patterns.
@@ -323,8 +336,10 @@ async def analyze_spatial_statistics(
         analyze_spatial_statistics as _analyze_spatial_statistics,
     )
 
+    resolved_params = _resolve_params(params, SpatialStatisticsParameters)
+
     # Call spatial statistics analysis function with ToolContext
-    result = await _analyze_spatial_statistics(data_id, ctx, params)
+    result = await _analyze_spatial_statistics(data_id, ctx, resolved_params)
 
     # Note: No writeback needed - adata modifications are in-place on the same object
 
@@ -528,7 +543,7 @@ async def analyze_cnv(
 @mcp_tool_error_handler()
 async def analyze_velocity_data(
     data_id: str,
-    params: RNAVelocityParameters = RNAVelocityParameters(),
+    params: Optional[RNAVelocityParameters] = None,
     context: Optional[Context] = None,
 ) -> RNAVelocityResult:
     """Analyze RNA velocity to understand cellular dynamics.
@@ -546,8 +561,10 @@ async def analyze_velocity_data(
     # Lazy import velocity analysis tool
     from .tools.velocity import analyze_rna_velocity
 
+    resolved_params = _resolve_params(params, RNAVelocityParameters)
+
     # Call RNA velocity function with ToolContext
-    result = await analyze_rna_velocity(data_id, ctx, params)
+    result = await analyze_rna_velocity(data_id, ctx, resolved_params)
 
     # Note: No writeback needed - adata modifications are in-place on the same object
 
@@ -563,7 +580,7 @@ async def analyze_velocity_data(
 @mcp_tool_error_handler()
 async def analyze_trajectory_data(
     data_id: str,
-    params: TrajectoryParameters = TrajectoryParameters(),
+    params: Optional[TrajectoryParameters] = None,
     context: Optional[Context] = None,
 ) -> TrajectoryResult:
     """Infer cellular trajectories and pseudotime.
@@ -581,8 +598,10 @@ async def analyze_trajectory_data(
     # Lazy import trajectory function
     from .tools.trajectory import analyze_trajectory
 
+    resolved_params = _resolve_params(params, TrajectoryParameters)
+
     # Call trajectory function
-    result = await analyze_trajectory(data_id, ctx, params)
+    result = await analyze_trajectory(data_id, ctx, resolved_params)
 
     # Note: No writeback needed - adata modifications are in-place on the same object
 
@@ -598,7 +617,7 @@ async def analyze_trajectory_data(
 @mcp_tool_error_handler()
 async def integrate_samples(
     data_ids: list[str],
-    params: IntegrationParameters = IntegrationParameters(),
+    params: Optional[IntegrationParameters] = None,
     context: Optional[Context] = None,
 ) -> IntegrationResult:
     """Integrate multiple spatial transcriptomics samples.
@@ -616,9 +635,11 @@ async def integrate_samples(
     # Lazy import to avoid slow startup
     from .tools.integration import integrate_samples as integrate_func
 
+    resolved_params = _resolve_params(params, IntegrationParameters)
+
     # Call integration function with ToolContext
     # Note: integrate_func uses ctx.add_dataset() to store the integrated dataset
-    result = await integrate_func(data_ids, ctx, params)
+    result = await integrate_func(data_ids, ctx, resolved_params)
 
     # Save integration result
     integrated_id = result.data_id
@@ -673,7 +694,7 @@ async def deconvolve_data(
 @mcp_tool_error_handler()
 async def identify_spatial_domains(
     data_id: str,
-    params: SpatialDomainParameters = SpatialDomainParameters(),
+    params: Optional[SpatialDomainParameters] = None,
     context: Optional[Context] = None,
 ) -> SpatialDomainResult:
     """Identify spatial domains and tissue architecture.
@@ -691,8 +712,10 @@ async def identify_spatial_domains(
     # Lazy import to avoid slow startup
     from .tools.spatial_domains import identify_spatial_domains as identify_domains_func
 
+    resolved_params = _resolve_params(params, SpatialDomainParameters)
+
     # Call spatial domains function with ToolContext
-    result = await identify_domains_func(data_id, ctx, params)
+    result = await identify_domains_func(data_id, ctx, resolved_params)
 
     # Note: No writeback needed - adata modifications are in-place on the same object
 
@@ -799,7 +822,7 @@ async def analyze_enrichment(
 @mcp_tool_error_handler()
 async def find_spatial_genes(
     data_id: str,
-    params: SpatialVariableGenesParameters = SpatialVariableGenesParameters(),
+    params: Optional[SpatialVariableGenesParameters] = None,
     context: Optional[Context] = None,
 ) -> SpatialVariableGenesResult:
     """Identify spatially variable genes.
@@ -817,8 +840,10 @@ async def find_spatial_genes(
     # Lazy import spatial genes tool
     from .tools.spatial_genes import identify_spatial_genes
 
+    resolved_params = _resolve_params(params, SpatialVariableGenesParameters)
+
     # Call spatial genes function with ToolContext
-    result = await identify_spatial_genes(data_id, ctx, params)
+    result = await identify_spatial_genes(data_id, ctx, resolved_params)
 
     # Note: No writeback needed - adata modifications are in-place on the same object
 
