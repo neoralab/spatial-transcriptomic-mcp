@@ -6,12 +6,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import time
+from collections import OrderedDict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, Optional
 
 import numpy as np
 import pandas as pd
 import scanpy as sc
+from scipy import sparse
 
 if TYPE_CHECKING:
     import anndata as ad
@@ -139,28 +143,48 @@ async def _annotate_with_singler(
     # Prepare reference
     reference_name = getattr(params, "singler_reference", None)
     reference_data_id = getattr(params, "reference_data_id", None)
+    use_integrated = bool(getattr(params, "singler_integrated", False))
+    n_threads = getattr(params, "n_threads", 4)
 
     ref_data = None
     ref_labels = None
     ref_features_to_use = None  # Only set when using custom reference (not celldex)
 
+    def _extract_reference_labels(ref_obj: Any, ref_id: str) -> Any:
+        """Extract labels from celldex reference using prioritized columns."""
+        for label_col in ("label.main", "label.fine", "cell_type"):
+            try:
+                return ref_obj.get_column_data().column(label_col)
+            except Exception:
+                continue
+        raise DataNotFoundError(f"Could not find labels in reference {ref_id}")
+
     # Priority: reference_name > reference_data_id > default
     if reference_name and celldex_module:
-        ref = celldex_module.fetch_reference(
-            reference_name, "2024-02-26", realize_assays=True
-        )
-        # Get labels
-        for label_col in ["label.main", "label.fine", "cell_type"]:
-            try:
-                ref_labels = ref.get_column_data().column(label_col)
-                break
-            except Exception:
-                continue  # Try next label column
-        if ref_labels is None:
-            raise DataNotFoundError(
-                f"Could not find labels in reference {reference_name}"
+        # Integrated mode supports multiple references via comma-separated names.
+        if use_integrated and "," in reference_name:
+            ref_names = [x.strip() for x in reference_name.split(",") if x.strip()]
+            if len(ref_names) < 2:
+                raise ParameterError(
+                    "singler_integrated=True requires at least two reference names "
+                    "when using comma-separated singler_reference."
+                )
+            refs: list[Any] = []
+            labels: list[Any] = []
+            for ref_name in ref_names:
+                ref_obj = celldex_module.fetch_reference(
+                    ref_name, "2024-02-26", realize_assays=True
+                )
+                refs.append(ref_obj)
+                labels.append(_extract_reference_labels(ref_obj, ref_name))
+            ref_data = refs
+            ref_labels = labels
+        else:
+            ref = celldex_module.fetch_reference(
+                reference_name, "2024-02-26", realize_assays=True
             )
-        ref_data = ref
+            ref_labels = _extract_reference_labels(ref, reference_name)
+            ref_data = ref
 
     elif reference_data_id and reference_adata is not None:
         # Use provided reference data (passed from main function via ctx.get_adata())
@@ -218,7 +242,7 @@ async def _annotate_with_singler(
         ref = celldex_module.fetch_reference(
             "blueprint_encode", "2024-02-26", realize_assays=True
         )
-        ref_labels = ref.get_column_data().column("label.main")
+        ref_labels = _extract_reference_labels(ref, "blueprint_encode")
         ref_data = ref
     else:
         raise DataNotFoundError(
@@ -226,9 +250,13 @@ async def _annotate_with_singler(
         )
 
     # Run SingleR annotation
-    use_integrated = getattr(params, "singler_integrated", False)
-    n_threads = getattr(params, "n_threads", 4)
     delta_scores = None
+
+    if use_integrated and not isinstance(ref_data, list):
+        raise ParameterError(
+            "singler_integrated=True requires multiple references. "
+            "Provide comma-separated singler_reference names (e.g. 'hpca,blueprint')."
+        )
 
     if use_integrated and isinstance(ref_data, list):
         single_results, integrated = singler.annotate_integrated(
@@ -382,7 +410,7 @@ async def _annotate_with_tangram(
             training_genes = []
             for genes in params.marker_genes.values():
                 training_genes.extend(genes)
-            training_genes = list(set(training_genes))  # Remove duplicates
+            training_genes = list(dict.fromkeys(training_genes))  # Stable deduplication
         else:
             # Use highly variable genes
             if "highly_variable" not in adata_sc_original.var:
@@ -1166,7 +1194,10 @@ async def _annotate_with_cellassign(
     all_marker_genes = []
     for genes in valid_marker_genes.values():
         all_marker_genes.extend(genes)
-    available_marker_genes = list(set(all_marker_genes))  # Remove duplicates
+    available_marker_genes = list(
+        dict.fromkeys(all_marker_genes)
+    )  # Stable deduplication
+    available_marker_genes_set = set(available_marker_genes)
 
     # Note: available_marker_genes cannot be empty here because valid_marker_genes
     # is already validated at line 1120 to have at least one cell type with genes
@@ -1181,7 +1212,7 @@ async def _annotate_with_cellassign(
     # Fill marker matrix
     for cell_type in valid_cell_types:
         for gene in valid_marker_genes[cell_type]:
-            if gene in available_marker_genes:
+            if gene in available_marker_genes_set:
                 marker_gene_matrix.loc[gene, cell_type] = 1
 
     # Compute size factors BEFORE subsetting (official CellAssign requirement)
@@ -1464,11 +1495,31 @@ async def annotate_cell_types(
 # SC-TYPE IMPLEMENTATION
 # ============================================================================
 
-# Cache for sc-type results (memory only, no pickle)
-_SCTYPE_CACHE: dict[str, Any] = {}
+# Cache for sc-type results (bounded LRU + optional TTL)
+_SCTYPE_CACHE: OrderedDict[str, Any] = OrderedDict()
 _SCTYPE_CACHE_DIR = Path.home() / ".chatspatial" / "sctype_cache"
+_SCTYPE_CACHE_MAX_ITEMS = max(
+    1, int(os.getenv("CHATSPATIAL_SCTYPE_CACHE_MAX_ITEMS", "64"))
+)
+_SCTYPE_CACHE_TTL_SECONDS = max(
+    0, int(os.getenv("CHATSPATIAL_SCTYPE_CACHE_TTL_SECONDS", "86400"))
+)
 
 # R code constants for sc-type (extracted for clarity)
+_R_CHECK_PACKAGES = """
+required_packages <- c("dplyr", "openxlsx", "HGNChelper")
+missing_packages <- required_packages[!sapply(required_packages, require, character.only = TRUE, quietly = TRUE)]
+if (length(missing_packages) > 0) {
+    stop(
+        paste(
+            "Missing required R packages for scType:",
+            paste(missing_packages, collapse = ", "),
+            ". Install manually or set CHATSPATIAL_ALLOW_RUNTIME_R_INSTALL=1."
+        )
+    )
+}
+"""
+
 _R_INSTALL_PACKAGES = """
 required_packages <- c("dplyr", "openxlsx", "HGNChelper")
 for (pkg in required_packages) {
@@ -1481,10 +1532,14 @@ for (pkg in required_packages) {
 }
 """
 
-_R_LOAD_SCTYPE = """
+_R_LOAD_SCTYPE_REMOTE = """
 source("https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/R/gene_sets_prepare.R")
 source("https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/R/sctype_score_.R")
 """
+
+_SCTYPE_DEFAULT_DB_URL = (
+    "https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/ScTypeDB_full.xlsx"
+)
 
 _R_SCTYPE_SCORING = """
 # Set row/column names and convert to dense
@@ -1551,6 +1606,16 @@ SCTYPE_VALID_TISSUES = {
 }
 
 
+def _is_truthy_env(name: str, default: str = "0") -> bool:
+    """Interpret standard truthy environment variable values."""
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_remote_resource(path: str) -> bool:
+    """Whether a resource path points to an HTTP(S) URL."""
+    return path.lower().startswith(("http://", "https://"))
+
+
 def _get_sctype_cache_key(adata, params: AnnotationParameters) -> str:
     """Generate cache key for sc-type results"""
     # Create a hash based on data and parameters
@@ -1558,8 +1623,15 @@ def _get_sctype_cache_key(adata, params: AnnotationParameters) -> str:
 
     # Hash expression data (sample first 1000 cells and 500 genes for efficiency)
     sample_slice = adata.X[: min(1000, adata.n_obs), : min(500, adata.n_vars)]
-    sample_data = to_dense(sample_slice)
-    data_hash.update(sample_data.tobytes())
+    data_hash.update(str(sample_slice.shape).encode())
+    if sparse.issparse(sample_slice):
+        sample_csr = sample_slice.tocsr()
+        data_hash.update(sample_csr.data.tobytes())
+        data_hash.update(sample_csr.indices.tobytes())
+        data_hash.update(sample_csr.indptr.tobytes())
+    else:
+        sample_data = np.asarray(sample_slice)
+        data_hash.update(np.ascontiguousarray(sample_data).tobytes())
 
     # Hash relevant parameters
     params_dict = {
@@ -1568,20 +1640,130 @@ def _get_sctype_cache_key(adata, params: AnnotationParameters) -> str:
         "scaled": params.sctype_scaled,
         "custom_markers": params.sctype_custom_markers,
     }
-    data_hash.update(str(params_dict).encode())
+    data_hash.update(json.dumps(params_dict, sort_keys=True, default=str).encode())
 
     return data_hash.hexdigest()
 
 
+def _debug_cache(ctx: "ToolContext", msg: str) -> None:
+    """Emit cache diagnostics without surfacing noisy user-facing warnings."""
+    debug_fn = getattr(ctx, "debug", None)
+    if callable(debug_fn):
+        debug_fn(msg)
+
+
+def _pack_cache_entry(payload: tuple[Any, Any, Any, Any]) -> tuple[float, tuple[Any, ...]]:
+    """Pack cache payload with timestamp."""
+    return (time.time(), payload)
+
+
+def _unpack_cache_entry(entry: Any) -> Optional[tuple[float, tuple[Any, ...]]]:
+    """Unpack modern/legacy cache entry formats.
+
+    Modern format: (timestamp, payload)
+    Legacy format: payload only
+    """
+    if (
+        isinstance(entry, tuple)
+        and len(entry) == 2
+        and isinstance(entry[0], (int, float))
+        and isinstance(entry[1], tuple)
+        and len(entry[1]) == 4
+    ):
+        return float(entry[0]), entry[1]
+
+    if isinstance(entry, tuple) and len(entry) == 4:
+        # Legacy in-memory entry had no timestamp.
+        return time.time(), entry
+
+    return None
+
+
+def _is_cache_expired(cached_at: float) -> bool:
+    """Check TTL-based expiration."""
+    if _SCTYPE_CACHE_TTL_SECONDS <= 0:
+        return False
+    return (time.time() - cached_at) > _SCTYPE_CACHE_TTL_SECONDS
+
+
+def _evict_sctype_cache_if_needed() -> None:
+    """Enforce in-memory cache size bound."""
+    if _SCTYPE_CACHE_MAX_ITEMS <= 0:
+        _SCTYPE_CACHE.clear()
+        return
+    while len(_SCTYPE_CACHE) > _SCTYPE_CACHE_MAX_ITEMS:
+        popitem_fn = getattr(_SCTYPE_CACHE, "popitem", None)
+        if callable(popitem_fn):
+            try:
+                popitem_fn(last=False)
+                continue
+            except TypeError:
+                pass
+        oldest_key = next(iter(_SCTYPE_CACHE))
+        _SCTYPE_CACHE.pop(oldest_key, None)
+
+
+def _touch_sctype_cache_key(cache_key: str) -> None:
+    """Mark key as recently used when OrderedDict semantics are available."""
+    move_to_end_fn = getattr(_SCTYPE_CACHE, "move_to_end", None)
+    if callable(move_to_end_fn):
+        move_to_end_fn(cache_key)
+
+
+def _store_memory_sctype_cache(
+    cache_key: str, payload: tuple[Any, Any, Any, Any]
+) -> None:
+    """Insert entry into bounded LRU cache."""
+    _SCTYPE_CACHE[cache_key] = _pack_cache_entry(payload)
+    _touch_sctype_cache_key(cache_key)
+    _evict_sctype_cache_if_needed()
+
+
 def _load_sctype_functions(ctx: "ToolContext") -> None:
-    """Load sc-type R functions and auto-install R packages if needed."""
+    """Load scType R functions with explicit supply-chain controls.
+
+    Security policy (default-safe):
+    - Runtime R package auto-install is OFF unless CHATSPATIAL_ALLOW_RUNTIME_R_INSTALL=1
+    - Remote script sourcing is OFF unless CHATSPATIAL_ALLOW_REMOTE_R_SOURCE=1
+    - Prefer local script directory via CHATSPATIAL_SCTYPE_R_DIR
+    """
+    allow_runtime_install = _is_truthy_env("CHATSPATIAL_ALLOW_RUNTIME_R_INSTALL", "0")
+    allow_remote_source = _is_truthy_env("CHATSPATIAL_ALLOW_REMOTE_R_SOURCE", "0")
+    local_script_dir = os.getenv("CHATSPATIAL_SCTYPE_R_DIR")
+
+    if local_script_dir:
+        script_dir = Path(local_script_dir).expanduser()
+        gene_sets_prepare = script_dir / "gene_sets_prepare.R"
+        sctype_score = script_dir / "sctype_score_.R"
+        missing = [str(p) for p in (gene_sets_prepare, sctype_score) if not p.exists()]
+        if missing:
+            raise ParameterError(
+                "Local scType R script directory is configured but files are missing: "
+                f"{missing}"
+            )
+        load_script = (
+            f'source("{gene_sets_prepare.as_posix()}")\n'
+            f'source("{sctype_score.as_posix()}")'
+        )
+    else:
+        if not allow_remote_source:
+            raise ParameterError(
+                "scType remote R script sourcing is disabled by default. "
+                "Set CHATSPATIAL_SCTYPE_R_DIR to a local script directory or "
+                "explicitly enable remote sourcing with CHATSPATIAL_ALLOW_REMOTE_R_SOURCE=1."
+            )
+        load_script = _R_LOAD_SCTYPE_REMOTE
+
     robjects, _, _, _, _, default_converter, openrlib, _ = validate_r_environment(ctx)
     from rpy2.robjects import conversion
 
     with openrlib.rlock:
         with conversion.localconverter(default_converter):
-            robjects.r(_R_INSTALL_PACKAGES)
-            robjects.r(_R_LOAD_SCTYPE)
+            if allow_runtime_install:
+                robjects.r(_R_INSTALL_PACKAGES)
+            else:
+                robjects.r(_R_CHECK_PACKAGES)
+            robjects.r(load_script)
 
 
 def _prepare_sctype_genesets(params: AnnotationParameters, ctx: "ToolContext") -> Any:
@@ -1594,13 +1776,24 @@ def _prepare_sctype_genesets(params: AnnotationParameters, ctx: "ToolContext") -
     if not tissue:
         raise ParameterError("sctype_tissue is required when not using custom markers")
 
+    db_path = params.sctype_db_ or _SCTYPE_DEFAULT_DB_URL
+    if _is_remote_resource(db_path):
+        if not _is_truthy_env("CHATSPATIAL_ALLOW_REMOTE_SCTYPE_DB", "0"):
+            raise ParameterError(
+                "scType remote database download is disabled by default. "
+                "Provide a local sctype_db_ path, or explicitly enable remote DB "
+                "with CHATSPATIAL_ALLOW_REMOTE_SCTYPE_DB=1."
+            )
+    else:
+        local_db = Path(db_path).expanduser()
+        if not local_db.exists():
+            raise DataNotFoundError(
+                f"scType database file not found: {local_db}"
+            )
+        db_path = local_db.as_posix()
+
     robjects, _, _, _, _, default_converter, openrlib, _ = validate_r_environment(ctx)
     from rpy2.robjects import conversion
-
-    db_path = (
-        params.sctype_db_
-        or "https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/ScTypeDB_full.xlsx"
-    )
 
     with openrlib.rlock:
         with conversion.localconverter(default_converter):
@@ -1784,9 +1977,13 @@ async def _cache_sctype_results(
         cache_file = _SCTYPE_CACHE_DIR / f"{cache_key}.json"
 
         # Convert tuple to serializable dict
-        cell_types, counts, confidence_by_celltype, mapping_score = results
+        per_cell_types, counts, confidence_by_celltype, mapping_score = results
         cache_data = {
-            "cell_types": cell_types,
+            "cache_format_version": 2,
+            "cached_at": time.time(),
+            "per_cell_types": per_cell_types,
+            # Backward-compatible alias for older cache readers.
+            "cell_types": per_cell_types,
             "counts": counts,
             "confidence_by_celltype": confidence_by_celltype,
             "mapping_score": mapping_score,
@@ -1795,16 +1992,27 @@ async def _cache_sctype_results(
         with open(cache_file, "w", encoding="utf-8") as f:
             json.dump(cache_data, f)
 
-        _SCTYPE_CACHE[cache_key] = results
-    except Exception:
-        pass  # Cache failure is non-critical
+        _store_memory_sctype_cache(cache_key, results)
+    except Exception as e:
+        _debug_cache(ctx, f"sc-type cache write skipped: {e}")
 
 
 def _load_cached_sctype_results(cache_key: str, ctx: "ToolContext") -> Optional[tuple]:
     """Load cached sc-type results from memory or JSON file."""
     # Check memory cache first
     if cache_key in _SCTYPE_CACHE:
-        return _SCTYPE_CACHE[cache_key]
+        unpacked = _unpack_cache_entry(_SCTYPE_CACHE[cache_key])
+        if unpacked is None:
+            _SCTYPE_CACHE.pop(cache_key, None)
+            _debug_cache(ctx, "sc-type cache entry dropped: invalid in-memory format")
+        else:
+            cached_at, payload = unpacked
+            if _is_cache_expired(cached_at):
+                _SCTYPE_CACHE.pop(cache_key, None)
+                _debug_cache(ctx, "sc-type cache miss: in-memory entry expired")
+            else:
+                _touch_sctype_cache_key(cache_key)
+                return payload
 
     # Check disk cache (JSON)
     cache_file = _SCTYPE_CACHE_DIR / f"{cache_key}.json"
@@ -1813,17 +2021,34 @@ def _load_cached_sctype_results(cache_key: str, ctx: "ToolContext") -> Optional[
             with open(cache_file, "r", encoding="utf-8") as f:
                 cache_data = json.load(f)
 
+            cached_at = float(cache_data.get("cached_at", time.time()))
+            if _is_cache_expired(cached_at):
+                cache_file.unlink(missing_ok=True)
+                _debug_cache(ctx, "sc-type cache miss: disk entry expired")
+                return None
+
+            per_cell_types = cache_data.get("per_cell_types", cache_data.get("cell_types"))
+            if not isinstance(per_cell_types, list):
+                raise ValueError("Invalid cache payload: missing per-cell sc-type labels")
+
             results = (
-                cache_data["cell_types"],
+                per_cell_types,
                 cache_data["counts"],
                 cache_data["confidence_by_celltype"],
                 cache_data.get("mapping_score"),
             )
-            _SCTYPE_CACHE[cache_key] = results
+            _store_memory_sctype_cache(cache_key, results)
             return results
-        except Exception:
+        except Exception as e:
             # Cache corrupted or incompatible, will recompute
-            pass
+            _debug_cache(ctx, f"sc-type cache read skipped: {e}")
+            try:
+                cache_file.unlink(missing_ok=True)
+            except Exception as cleanup_error:
+                _debug_cache(
+                    ctx,
+                    f"sc-type cache cleanup skipped for {cache_file.name}: {cleanup_error}",
+                )
 
     return None
 
@@ -1836,9 +2061,6 @@ async def _annotate_with_sctype(
     confidence_key: str,
 ) -> AnnotationMethodOutput:
     """Annotate cell types using sc-type method."""
-    # Validate R environment
-    validate_r_environment(ctx)
-
     # Validate parameters
     if not params.sctype_tissue and not params.sctype_custom_markers:
         raise ParameterError(
@@ -1857,14 +2079,22 @@ async def _annotate_with_sctype(
         cache_key = _get_sctype_cache_key(adata, params)
         cached = _load_cached_sctype_results(cache_key, ctx)
         if cached:
-            # Convert cached tuple to AnnotationMethodOutput
-            cell_types, counts, confidence, _ = cached
-            # Still need to store in adata.obs when using cache
-            adata.obs[output_key] = pd.Categorical(cell_types)
-            return AnnotationMethodOutput(
-                cell_types=cell_types,
-                counts=counts,
-                confidence=confidence,
+            # Cache stores per-cell labels; response returns unique labels for contract consistency.
+            per_cell_types, counts, confidence_by_celltype, _ = cached
+            if len(per_cell_types) == adata.n_obs:
+                adata.obs[output_key] = pd.Categorical(per_cell_types)
+                adata.obs[confidence_key] = [
+                    float(confidence_by_celltype.get(ct, 0.0)) for ct in per_cell_types
+                ]
+                unique_cell_types = list(dict.fromkeys(per_cell_types))
+                return AnnotationMethodOutput(
+                    cell_types=unique_cell_types,
+                    counts=counts,
+                    confidence=confidence_by_celltype,
+                )
+
+            await ctx.warning(
+                "sc-type cache entry is stale (cell count mismatch). Recomputing results."
             )
 
     # Run sc-type pipeline
@@ -1876,13 +2106,16 @@ async def _annotate_with_sctype(
     # Calculate statistics
     counts = _calculate_sctype_stats(per_cell_types)
 
-    # Average confidence per cell type (for return value)
-    confidence_by_celltype = {}
-    for ct in set(per_cell_types):
-        ct_confs = [
-            c for i, c in enumerate(per_cell_confidence) if per_cell_types[i] == ct
-        ]
-        confidence_by_celltype[ct] = sum(ct_confs) / len(ct_confs) if ct_confs else 0.0
+    # Average confidence per cell type in O(n) time.
+    confidence_sums: dict[str, float] = {}
+    confidence_counts: dict[str, int] = {}
+    for ct, conf in zip(per_cell_types, per_cell_confidence, strict=False):
+        confidence_sums[ct] = confidence_sums.get(ct, 0.0) + float(conf)
+        confidence_counts[ct] = confidence_counts.get(ct, 0) + 1
+    confidence_by_celltype = {
+        ct: (confidence_sums[ct] / confidence_counts[ct]) if confidence_counts[ct] else 0.0
+        for ct in dict.fromkeys(per_cell_types)
+    }
 
     # Store in adata.obs (keys provided by caller)
     adata.obs[output_key] = pd.Categorical(per_cell_types)
@@ -1893,7 +2126,7 @@ async def _annotate_with_sctype(
 
     # Cache results (as tuple for compatibility)
     if params.sctype_use_cache and cache_key:
-        cache_tuple = (unique_cell_types, counts, confidence_by_celltype, None)
+        cache_tuple = (per_cell_types, counts, confidence_by_celltype, None)
         await _cache_sctype_results(cache_key, cache_tuple, ctx)
 
     return AnnotationMethodOutput(
