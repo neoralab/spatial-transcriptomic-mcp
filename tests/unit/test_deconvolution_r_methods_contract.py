@@ -65,13 +65,15 @@ def _install_fake_r_modules(monkeypatch: pytest.MonkeyPatch, ro_r):
     conversion_mod.localconverter = _localconverter
 
     rpy2_mod = ModuleType("rpy2")
+    anndata2ri_mod = ModuleType("anndata2ri")
+    anndata2ri_mod.converter = _Converter()
 
     monkeypatch.setitem(modules, "rpy2", rpy2_mod)
     monkeypatch.setitem(modules, "rpy2.robjects", ro_mod)
     monkeypatch.setitem(modules, "rpy2.robjects.pandas2ri", pandas2ri_mod)
     monkeypatch.setitem(modules, "rpy2.robjects.numpy2ri", numpy2ri_mod)
     monkeypatch.setitem(modules, "rpy2.robjects.conversion", conversion_mod)
-    monkeypatch.setitem(modules, "anndata2ri", ModuleType("anndata2ri"))
+    monkeypatch.setitem(modules, "anndata2ri", anndata2ri_mod)
 
 
 def test_rctd_mode_multi_parameter_guard_before_heavy_execution(
@@ -136,3 +138,68 @@ def test_card_wraps_runtime_errors_as_processing_error(
 
     with pytest.raises(ProcessingError, match="CARD deconvolution failed"):
         card_module.deconvolve(data)
+
+
+def test_card_success_with_fake_r_outputs(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    data = _prepared_data(minimal_spatial_adata)
+
+    def _ro_r(code: str):
+        text = code.strip()
+        if text == "rownames(CARD_obj@Proportion_CARD)":
+            return ["s1", "s2"]
+        if text == "colnames(CARD_obj@Proportion_CARD)":
+            return ["A", "B"]
+        if text == "CARD_obj@Proportion_CARD":
+            return np.array([[0.7, 0.3], [0.2, 0.8]])
+        return None
+
+    _install_fake_r_modules(monkeypatch, ro_r=_ro_r)
+    monkeypatch.setattr(card_module, "validate_r_package", lambda *_args, **_kwargs: None)
+
+    proportions, stats = card_module.deconvolve(data)
+
+    assert proportions.shape == (2, 2)
+    assert list(proportions.columns) == ["A", "B"]
+    assert stats["method"] == "CARD"
+    assert stats["device"] == "CPU"
+    assert stats["common_genes"] == len(data.common_genes)
+
+
+def test_card_success_with_imputation_adds_imputation_statistics(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    data = _prepared_data(minimal_spatial_adata)
+
+    def _ro_r(code: str):
+        text = code.strip()
+        if text == "rownames(CARD_obj@Proportion_CARD)":
+            return ["s1", "s2"]
+        if text == "colnames(CARD_obj@Proportion_CARD)":
+            return ["A", "B"]
+        if text == "CARD_obj@Proportion_CARD":
+            return np.array([[0.6, 0.4], [0.1, 0.9]])
+        if text == "rownames(CARD_impute@refined_prop)":
+            return ["1x2", "3x4"]
+        if text == "colnames(CARD_impute@refined_prop)":
+            return ["A", "B"]
+        if text == "CARD_impute@refined_prop":
+            return np.array([[0.5, 0.5], [0.8, 0.2]])
+        return None
+
+    _install_fake_r_modules(monkeypatch, ro_r=_ro_r)
+    monkeypatch.setattr(card_module, "validate_r_package", lambda *_args, **_kwargs: None)
+
+    proportions, stats = card_module.deconvolve(
+        data,
+        imputation=True,
+        NumGrids=500,
+        ineibor=5,
+    )
+
+    assert proportions.shape == (2, 2)
+    assert "imputation" in stats
+    assert stats["imputation"]["enabled"] is True
+    assert stats["imputation"]["n_imputed_locations"] == 2
+    assert stats["imputation"]["resolution_increase"] == "1.0x"
