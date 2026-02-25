@@ -218,6 +218,25 @@ def test_spotlight_success_casts_counts_and_returns_stats(
     assert stats["min_prop"] == pytest.approx(0.05)
 
 
+def test_spotlight_passthrough_processing_error(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    data = _prepared_data(minimal_spatial_adata)
+
+    _install_fake_r_modules(monkeypatch, ro_r=lambda _code: None)
+    monkeypatch.setattr(
+        spotlight_module, "validate_r_package", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        spotlight_module,
+        "to_dense",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ProcessingError("dense failed")),
+    )
+
+    with pytest.raises(ProcessingError, match="dense failed"):
+        spotlight_module.deconvolve(data)
+
+
 def test_rctd_deconvolve_filters_rare_types_and_raises_when_insufficient_types(
     minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
 ):

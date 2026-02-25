@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import builtins
 from contextlib import nullcontext
+from dataclasses import replace
 from types import ModuleType, SimpleNamespace
 
 import numpy as np
@@ -165,6 +166,57 @@ def test_tangram_success_with_fake_module(
     assert stats["method"] == "Tangram"
 
 
+def test_tangram_cells_mode_uses_fallback_cell_type_column(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    data = _prepared_data(minimal_spatial_adata)
+    data.reference.obs["ct"] = data.reference.obs["cell_type"].copy()
+    data.reference.obs = data.reference.obs.drop(columns=["cell_type"])
+    data = replace(data, cell_type_key="ct")
+
+    class _Map:
+        def __init__(self, X):
+            self.X = X
+
+    def _pp_adatas(_ref, _spatial, genes):
+        assert len(genes) > 0
+
+    def _map_cells_to_space(ref_data, spatial_data, **kwargs):
+        assert kwargs["mode"] == "cells"
+        assert "cluster_label" not in kwargs
+        assert "cell_type" in ref_data.obs.columns
+        return _Map(np.ones((ref_data.n_obs, spatial_data.n_obs), dtype=float))
+
+    fake_mod = ModuleType("tangram")
+    fake_mod.pp_adatas = _pp_adatas
+    fake_mod.map_cells_to_space = _map_cells_to_space
+    monkeypatch.setitem(__import__("sys").modules, "tangram", fake_mod)
+    monkeypatch.setattr(tangram_module, "get_device", lambda **_kwargs: "cpu")
+
+    proportions, stats = tangram_module.deconvolve(data, mode="cells", n_epochs=3)
+    assert proportions.shape == (data.n_spots, 2)
+    assert set(proportions.columns) == {"A", "B"}
+    assert stats["device"] == "CPU"
+
+
+def test_tangram_wraps_unexpected_errors(minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch):
+    data = _prepared_data(minimal_spatial_adata)
+
+    def _pp_adatas(_ref, _spatial, genes):
+        assert len(genes) > 0
+
+    def _map_cells_to_space(*_args, **_kwargs):
+        raise RuntimeError("bad mapping")
+
+    fake_mod = ModuleType("tangram")
+    fake_mod.pp_adatas = _pp_adatas
+    fake_mod.map_cells_to_space = _map_cells_to_space
+    monkeypatch.setitem(__import__("sys").modules, "tangram", fake_mod)
+
+    with pytest.raises(ProcessingError, match="Tangram deconvolution failed"):
+        tangram_module.deconvolve(data, mode="cells")
+
+
 def test_destvi_dependency_error(minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch):
     data = _prepared_data(minimal_spatial_adata)
     monkeypatch.setattr(destvi_module, "is_available", lambda *_: False)
@@ -276,6 +328,101 @@ def test_stereoscope_success_with_fake_scvi_external(
     assert stats["spatial_epochs"] == 50
 
 
+def test_stereoscope_default_epochs_and_gpu_kwargs(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    data = _prepared_data(minimal_spatial_adata)
+    data.reference.obs["cell_type"] = data.reference.obs["cell_type"].astype(str)
+    monkeypatch.setattr(stereo_module, "get_accelerator", lambda **_kwargs: "gpu")
+
+    train_calls: list[dict[str, object]] = []
+
+    class FakeRNAStereoscope:
+        @staticmethod
+        def setup_anndata(*_args, **_kwargs):
+            return None
+
+        def __init__(self, _ref):
+            return None
+
+        def train(self, **kwargs):
+            train_calls.append({"stage": "rna", **kwargs})
+
+    class FakeSpatialStereoscope:
+        @staticmethod
+        def setup_anndata(*_args, **_kwargs):
+            return None
+
+        @classmethod
+        def from_rna_model(cls, spatial_data, _rna_model):
+            inst = cls()
+            inst._n = spatial_data.n_obs
+            return inst
+
+        def train(self, **kwargs):
+            train_calls.append({"stage": "spatial", **kwargs})
+
+        def get_proportions(self):
+            return np.tile(np.array([0.7, 0.3]), (self._n, 1))
+
+    scvi_mod = ModuleType("scvi")
+    external_mod = ModuleType("scvi.external")
+    external_mod.RNAStereoscope = FakeRNAStereoscope
+    external_mod.SpatialStereoscope = FakeSpatialStereoscope
+    monkeypatch.setitem(__import__("sys").modules, "scvi", scvi_mod)
+    monkeypatch.setitem(__import__("sys").modules, "scvi.external", external_mod)
+
+    proportions, stats = stereo_module.deconvolve(data, n_epochs=150000, use_gpu=True)
+    assert proportions.shape == (data.n_spots, 2)
+    assert stats["rna_epochs"] == 75000
+    assert stats["spatial_epochs"] == 75000
+    assert stats["device"] == "gpu"
+
+    rna_call = next(c for c in train_calls if c["stage"] == "rna")
+    spatial_call = next(c for c in train_calls if c["stage"] == "spatial")
+    assert rna_call["max_epochs"] == 75000
+    assert spatial_call["max_epochs"] == 75000
+    assert rna_call["accelerator"] == "gpu"
+    assert spatial_call["accelerator"] == "gpu"
+
+
+def test_stereoscope_wraps_unexpected_errors(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    data = _prepared_data(minimal_spatial_adata)
+    data.reference.obs["cell_type"] = data.reference.obs["cell_type"].astype(str)
+
+    class FakeRNAStereoscope:
+        @staticmethod
+        def setup_anndata(*_args, **_kwargs):
+            return None
+
+        def __init__(self, _ref):
+            return None
+
+        def train(self, **_kwargs):
+            return None
+
+    class FakeSpatialStereoscope:
+        @staticmethod
+        def setup_anndata(*_args, **_kwargs):
+            return None
+
+        @classmethod
+        def from_rna_model(cls, _spatial_data, _rna_model):
+            raise RuntimeError("spatial model failed")
+
+    scvi_mod = ModuleType("scvi")
+    external_mod = ModuleType("scvi.external")
+    external_mod.RNAStereoscope = FakeRNAStereoscope
+    external_mod.SpatialStereoscope = FakeSpatialStereoscope
+    monkeypatch.setitem(__import__("sys").modules, "scvi", scvi_mod)
+    monkeypatch.setitem(__import__("sys").modules, "scvi.external", external_mod)
+
+    with pytest.raises(ProcessingError, match="Stereoscope deconvolution failed"):
+        stereo_module.deconvolve(data, n_epochs=10, use_gpu=False)
+
+
 @pytest.mark.asyncio
 async def test_cell2location_apply_gene_filtering_unavailable_returns_copy(
     minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
@@ -319,6 +466,34 @@ def test_cell2location_build_train_kwargs_variants():
     assert standard["max_epochs"] == 10
     assert standard["train_size"] == pytest.approx(0.7)
     assert "accelerator" not in standard
+
+
+def test_cell2location_build_train_kwargs_standard_gpu_and_aggressive_no_es():
+    standard_gpu = c2l_module._build_train_kwargs(
+        epochs=8,
+        lr=0.02,
+        train_size=0.6,
+        accelerator="gpu",
+        early_stopping=False,
+        early_stopping_patience=5,
+        validation_size=0.1,
+        use_aggressive=False,
+    )
+    assert standard_gpu["accelerator"] == "gpu"
+    assert standard_gpu["train_size"] == pytest.approx(0.6)
+
+    aggressive_no_es = c2l_module._build_train_kwargs(
+        epochs=12,
+        lr=0.01,
+        train_size=0.75,
+        accelerator="cpu",
+        early_stopping=False,
+        early_stopping_patience=5,
+        validation_size=0.2,
+        use_aggressive=True,
+    )
+    assert aggressive_no_es["train_size"] == pytest.approx(0.75)
+    assert "check_val_every_n_epoch" not in aggressive_no_es
 
 
 def test_cell2location_extract_reference_signatures_and_abundance(minimal_spatial_adata):
@@ -469,6 +644,100 @@ def test_cell2location_deconvolve_success_with_fake_models(
     assert stats["method"] == "Cell2location"
     assert stats["device"] == "cpu"
     assert "final_elbo" in stats
+
+
+def test_cell2location_deconvolve_casts_ref_and_spatial_to_float32(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    data = _prepared_data(minimal_spatial_adata)
+    data.reference.X = data.reference.X.astype(np.int64)
+    data.spatial.X = data.spatial.X.astype(np.float64)
+
+    monkeypatch.setattr(c2l_module, "require", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(c2l_module, "get_device", lambda **_kwargs: "cpu")
+    monkeypatch.setattr(c2l_module, "get_accelerator", lambda **_kwargs: "cpu")
+    monkeypatch.setattr(c2l_module, "suppress_output", nullcontext)
+    monkeypatch.setattr(
+        c2l_module,
+        "check_model_convergence",
+        lambda *_args, **_kwargs: (True, None),
+    )
+
+    class _FakeRegressionModel:
+        @staticmethod
+        def setup_anndata(*_args, **_kwargs):
+            return None
+
+        def __init__(self, ref):
+            assert ref.X.dtype == np.float32
+            self.history = {"elbo_train": pd.Series([1.0])}
+
+        def train(self, **_kwargs):
+            return None
+
+        def export_posterior(self, ref, **_kwargs):
+            ref.uns["mod"] = {"factor_names": ["A", "B"]}
+            ref.var["means_per_cluster_mu_fg_A"] = np.ones(ref.n_vars)
+            ref.var["means_per_cluster_mu_fg_B"] = np.full(ref.n_vars, 2.0)
+            return ref
+
+    class _FakeCell2location:
+        @staticmethod
+        def setup_anndata(*_args, **_kwargs):
+            return None
+
+        def __init__(self, sp, **_kwargs):
+            assert sp.X.dtype == np.float32
+            self._n = sp.n_obs
+            self.history = {"elbo_train": pd.Series([2.0])}
+
+        def train(self, **_kwargs):
+            return None
+
+        def export_posterior(self, sp, **_kwargs):
+            sp.obsm["q05_cell_abundance_w_sf"] = np.tile([0.5, 0.5], (sp.n_obs, 1))
+            return sp
+
+    cell2location_pkg = ModuleType("cell2location")
+    models_mod = ModuleType("cell2location.models")
+    models_mod.Cell2location = _FakeCell2location
+    models_mod.RegressionModel = _FakeRegressionModel
+    monkeypatch.setitem(__import__("sys").modules, "cell2location", cell2location_pkg)
+    monkeypatch.setitem(__import__("sys").modules, "cell2location.models", models_mod)
+
+    proportions, stats = c2l_module.deconvolve(data, n_epochs=2, ref_model_epochs=2)
+    assert proportions.shape == (data.n_spots, 2)
+    assert stats["method"] == "Cell2location"
+
+
+def test_cell2location_deconvolve_passthrough_data_error(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    data = _prepared_data(minimal_spatial_adata)
+
+    monkeypatch.setattr(c2l_module, "require", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(c2l_module, "get_device", lambda **_kwargs: "cpu")
+    monkeypatch.setattr(c2l_module, "get_accelerator", lambda **_kwargs: "cpu")
+
+    class _FakeRegressionModel:
+        @staticmethod
+        def setup_anndata(*_args, **_kwargs):
+            raise DataError("invalid reference")
+
+    class _FakeCell2location:
+        @staticmethod
+        def setup_anndata(*_args, **_kwargs):
+            return None
+
+    cell2location_pkg = ModuleType("cell2location")
+    models_mod = ModuleType("cell2location.models")
+    models_mod.Cell2location = _FakeCell2location
+    models_mod.RegressionModel = _FakeRegressionModel
+    monkeypatch.setitem(__import__("sys").modules, "cell2location", cell2location_pkg)
+    monkeypatch.setitem(__import__("sys").modules, "cell2location.models", models_mod)
+
+    with pytest.raises(DataError, match="invalid reference"):
+        c2l_module.deconvolve(data)
 
 
 def test_cell2location_deconvolve_wraps_unexpected_errors(
