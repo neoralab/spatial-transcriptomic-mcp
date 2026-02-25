@@ -413,7 +413,9 @@ def shallow_copy_adata(adata: "ad.AnnData") -> "ad.AnnData":
 
     # Share raw if present
     if adata.raw is not None:
-        adata_new.raw = adata.raw
+        # AnnData.raw setter only accepts AnnData, but we intentionally keep
+        # shallow-copy semantics here to avoid duplicating raw matrices.
+        adata_new._raw = adata.raw  # type: ignore[attr-defined]
 
     return adata_new
 
@@ -689,18 +691,19 @@ def _validate_velocity_data(adata: "ad.AnnData", issues: list[str]) -> None:
     if "spliced" in adata.layers and "unspliced" in adata.layers:
         for layer_name in ["spliced", "unspliced"]:
             layer_data = adata.layers[layer_name]
+            is_sparse_layer = sparse.issparse(layer_data)
 
-            if hasattr(layer_data, "nnz"):  # Sparse matrix
+            if is_sparse_layer:
                 if layer_data.nnz == 0:
                     issues.append(f"'{layer_name}' layer is empty (all zeros)")
-            else:  # Dense matrix
+            else:
                 if np.all(layer_data == 0):
                     issues.append(f"'{layer_name}' layer is empty (all zeros)")
 
-            if hasattr(layer_data, "data"):  # Sparse matrix
+            if is_sparse_layer:
                 if np.any(np.isnan(layer_data.data)):
                     issues.append(f"'{layer_name}' layer contains NaN values")
-            else:  # Dense matrix
+            else:
                 if np.any(np.isnan(layer_data)):
                     issues.append(f"'{layer_name}' layer contains NaN values")
 

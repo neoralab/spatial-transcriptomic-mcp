@@ -89,6 +89,13 @@ def test_require_spatial_coords_obs_xy_nan_and_missing_sources(minimal_spatial_a
         au.require_spatial_coords(adata2)
 
 
+def test_require_spatial_coords_rejects_less_than_two_dimensions(minimal_spatial_adata):
+    adata = minimal_spatial_adata.copy()
+    adata.obsm["spatial"] = np.ones((adata.n_obs, 1), dtype=float)
+    with pytest.raises(DataError, match="at least 2 dimensions"):
+        au.require_spatial_coords(adata)
+
+
 def test_validate_obs_and_var_column_raise_useful_errors(minimal_spatial_adata):
     adata = minimal_spatial_adata.copy()
 
@@ -115,6 +122,19 @@ def test_validate_adata_basics_check_empty_ratio_for_dense_and_sparse(minimal_sp
         au.validate_adata_basics(sparse_adata, check_empty_ratio=True, max_empty_vars_ratio=0.5)
 
 
+def test_validate_adata_basics_rejects_none_and_too_small_dataset(minimal_spatial_adata):
+    with pytest.raises(DataError, match="cannot be None"):
+        au.validate_adata_basics(None)
+
+    tiny_obs = minimal_spatial_adata[:1, :].copy()
+    with pytest.raises(DataError, match="observations"):
+        au.validate_adata_basics(tiny_obs, min_obs=2)
+
+    tiny_var = minimal_spatial_adata[:, :1].copy()
+    with pytest.raises(DataError, match="variables"):
+        au.validate_adata_basics(tiny_var, min_vars=2)
+
+
 def test_ensure_categorical_converts_and_rejects_missing_column(minimal_spatial_adata):
     adata = minimal_spatial_adata.copy()
     adata.obs["cluster"] = ["A", "B"] * (adata.n_obs // 2)
@@ -129,13 +149,17 @@ def test_ensure_categorical_converts_and_rejects_missing_column(minimal_spatial_
 def test_shallow_copy_adata_shares_expression_but_copies_metadata(minimal_spatial_adata):
     adata = minimal_spatial_adata.copy()
     adata.layers["counts"] = np.asarray(adata.X).copy()
+    adata.varm["loadings"] = np.ones((adata.n_vars, 2), dtype=float)
     adata.uns["meta"] = {"v": 1}
+    adata.raw = adata.copy()
 
     shallow = au.shallow_copy_adata(adata)
 
     assert shallow is not adata
     assert shallow.X is adata.X
     assert shallow.layers["counts"] is adata.layers["counts"]
+    assert shallow.varm["loadings"] is adata.varm["loadings"]
+    assert shallow.raw is adata.raw
     assert shallow.obs is not adata.obs
     assert shallow.var is not adata.var
     assert shallow.uns is not adata.uns
@@ -163,6 +187,15 @@ def test_store_and_reconstruct_velovi_essential_data_roundtrip(minimal_spatial_a
     assert "distances" in reconstructed.obsp
     assert "neighbors" in reconstructed.uns
     assert "spatial" in reconstructed.obsm
+
+
+def test_store_velovi_essential_data_uses_velocity_fallback(minimal_spatial_adata):
+    adata = minimal_spatial_adata.copy()
+    vel = minimal_spatial_adata[:, :4].copy()
+    vel.layers["velocity"] = np.full((vel.n_obs, vel.n_vars), 0.2, dtype=np.float32)
+    au.store_velovi_essential_data(adata, vel)
+    assert "velovi_velocity" in adata.uns
+    assert np.array_equal(adata.uns["velovi_velocity"], vel.layers["velocity"])
 
 
 def test_reconstruct_velovi_adata_requires_essential_keys(minimal_spatial_adata):
@@ -199,6 +232,18 @@ def test_standardize_adata_ignores_obs_xy_conversion_errors(
     monkeypatch.setattr(au.pd, "to_numeric", lambda *_a, **_k: (_ for _ in ()).throw(ValueError("boom")))
     out = au.standardize_adata(adata, copy=True)
     assert "spatial" not in out.obsm
+
+
+def test_standardize_adata_moves_numeric_obs_xy_to_spatial(minimal_spatial_adata):
+    adata = minimal_spatial_adata.copy()
+    adata.obsm.pop("spatial", None)
+    adata.obs["x"] = [str(i) for i in range(adata.n_obs)]
+    adata.obs["y"] = [str(i + 1) for i in range(adata.n_obs)]
+
+    out = au.standardize_adata(adata, copy=True)
+    assert "spatial" in out.obsm
+    assert out.obsm["spatial"].dtype == np.float64
+    assert out.obsm["spatial"].shape == (adata.n_obs, 2)
 
 
 def test_validate_adata_required_keys_and_integrity_checks(minimal_spatial_adata):
@@ -256,6 +301,19 @@ def test_validate_adata_spatial_and_velocity_issue_branches(minimal_spatial_adat
         au.validate_adata(adata3, required_keys={}, check_velocity=True)
 
 
+def test_validate_adata_velocity_dense_issue_branches(minimal_spatial_adata):
+    adata = minimal_spatial_adata.copy()
+    adata.layers["spliced"] = np.zeros((adata.n_obs, adata.n_vars), dtype=float)
+    unspliced = np.ones((adata.n_obs, adata.n_vars), dtype=float)
+    unspliced[0, 0] = np.nan
+    adata.layers["unspliced"] = unspliced
+
+    with pytest.raises(DataError, match="spliced.*all zeros"):
+        au.validate_adata(adata, required_keys={}, check_velocity=True)
+    with pytest.raises(DataError, match="unspliced.*NaN"):
+        au.validate_adata(adata, required_keys={}, check_velocity=True)
+
+
 def test_store_analysis_metadata_and_get_parameter(minimal_spatial_adata):
     adata = minimal_spatial_adata.copy()
 
@@ -268,9 +326,13 @@ def test_store_analysis_metadata_and_get_parameter(minimal_spatial_adata):
         statistics={"n_clusters": 3},
         species="human",
         database="consensus",
+        reference_info={"source": "ref_atlas_v1"},
     )
 
     assert "spatial_stats_neighborhood_metadata" in adata.uns
+    assert adata.uns["spatial_stats_neighborhood_metadata"]["reference_info"] == {
+        "source": "ref_atlas_v1"
+    }
     assert (
         au.get_analysis_parameter(
             adata,
@@ -288,6 +350,16 @@ def test_store_analysis_metadata_and_get_parameter(minimal_spatial_adata):
             default="fallback",
         )
         == "fallback"
+    )
+    adata.uns["no_params_metadata"] = {"method": "x"}
+    assert (
+        au.get_analysis_parameter(
+            adata,
+            analysis_name="no_params",
+            parameter_name="cluster_key",
+            default="fallback2",
+        )
+        == "fallback2"
     )
 
 
@@ -377,6 +449,7 @@ def test_check_is_integer_counts_and_ensure_counts_layer(minimal_spatial_adata):
     assert is_int is False
     assert has_neg is True
     assert has_dec is True
+    assert au.check_is_integer_counts(sparse.csr_matrix(dense)) == (True, False, False)
 
     adata = minimal_spatial_adata.copy()
     adata.layers["counts"] = np.asarray(adata.X).copy()
@@ -395,6 +468,21 @@ def test_check_is_integer_counts_and_ensure_counts_layer(minimal_spatial_adata):
     adata3.layers.clear()
     with pytest.raises(DataNotFoundError, match="Cannot create 'counts' layer"):
         au.ensure_counts_layer(adata3)
+
+
+def test_get_raw_data_source_skips_normalized_raw_and_falls_back_to_counts(
+    minimal_spatial_adata,
+):
+    adata = minimal_spatial_adata.copy()
+    raw_non_integer = adata.copy()
+    raw_non_integer.X = np.asarray(raw_non_integer.X, dtype=float) + 0.25
+    adata.raw = raw_non_integer
+    adata.layers["counts"] = np.asarray(adata.X, dtype=np.int64)
+
+    out = au.get_raw_data_source(
+        adata, prefer_complete_genes=True, require_integer_counts=True
+    )
+    assert out.source == "counts_layer"
 
 
 def test_get_gene_and_genes_expression_paths(minimal_spatial_adata):
