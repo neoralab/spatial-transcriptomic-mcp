@@ -267,6 +267,48 @@ async def test_phase_success_uses_velocity_genes_and_context(minimal_spatial_ada
 
 
 @pytest.mark.asyncio
+async def test_phase_supports_string_feature_and_default_genes_without_velocity_flag(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    adata.layers["velocity"] = np.zeros((adata.n_obs, adata.n_vars), dtype=float)
+    adata.layers["Ms"] = np.ones((adata.n_obs, adata.n_vars), dtype=float)
+    adata.layers["Mu"] = np.ones((adata.n_obs, adata.n_vars), dtype=float)
+
+    monkeypatch.setattr(viz_vel, "require", lambda *_a, **_k: None)
+    monkeypatch.setattr(viz_vel, "infer_basis", lambda *_a, **_k: "umap")
+    captured: dict[str, object] = {}
+    fake_scv = ModuleType("scvelo")
+
+    def _velocity(*_args, **kwargs):
+        captured["var_names"] = kwargs.get("var_names")
+        plt.figure()
+
+    fake_scv.pl = SimpleNamespace(velocity=_velocity)
+    monkeypatch.setitem(sys.modules, "scvelo", fake_scv)
+
+    fig1 = await viz_vel._create_velocity_phase_plot(
+        adata,
+        VisualizationParameters(
+            plot_type="velocity",
+            subtype="phase",
+            feature="gene_0",
+        ),
+        context=DummyCtx(),
+    )
+    assert captured["var_names"] == ["gene_0"]
+    fig1.clf()
+
+    fig2 = await viz_vel._create_velocity_phase_plot(
+        adata,
+        VisualizationParameters(plot_type="velocity", subtype="phase"),
+        context=DummyCtx(),
+    )
+    assert captured["var_names"] == list(adata.var_names[:4])
+    fig2.clf()
+
+
+@pytest.mark.asyncio
 async def test_phase_raises_when_requested_genes_are_missing(minimal_spatial_adata, monkeypatch):
     adata = minimal_spatial_adata.copy()
     adata.layers["velocity"] = np.zeros((adata.n_obs, adata.n_vars), dtype=float)
@@ -317,6 +359,19 @@ async def test_proportions_success_and_cluster_auto_selection(
     assert any("Using cluster_key: 'group'" in msg for msg in ctx.infos)
     assert any("Creating proportions plot grouped by 'group'" in msg for msg in ctx.infos)
     fig.clf()
+
+    fig_titled = await viz_vel._create_velocity_proportions_plot(
+        adata,
+        VisualizationParameters(
+            plot_type="velocity",
+            subtype="proportions",
+            title="Props Title",
+        ),
+        context=DummyCtx(),
+    )
+    assert fig_titled._suptitle is not None
+    assert fig_titled._suptitle.get_text() == "Props Title"
+    fig_titled.clf()
 
 
 @pytest.mark.asyncio
@@ -377,6 +432,47 @@ async def test_heatmap_success_uses_latent_time_and_hvg_fallback(
     assert any("Creating velocity heatmap with 8 genes" in msg for msg in ctx.infos)
     assert fig._suptitle is not None
     fig.clf()
+
+
+@pytest.mark.asyncio
+async def test_heatmap_feature_string_and_velocity_genes_branches(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    adata.obs["latent_time"] = np.linspace(0.0, 1.0, adata.n_obs)
+    adata.var["velocity_genes"] = [True] * 6 + [False] * (adata.n_vars - 6)
+
+    monkeypatch.setattr(viz_vel, "require", lambda *_a, **_k: None)
+    captured: dict[str, object] = {}
+    fake_scv = ModuleType("scvelo")
+
+    def _heatmap(*_args, **kwargs):
+        captured["var_names"] = kwargs.get("var_names")
+        plt.figure()
+
+    fake_scv.pl = SimpleNamespace(heatmap=_heatmap)
+    fake_scv.tl = SimpleNamespace(velocity_pseudotime=lambda *_a, **_k: None)
+    monkeypatch.setitem(sys.modules, "scvelo", fake_scv)
+
+    fig_feature = await viz_vel._create_velocity_heatmap(
+        adata,
+        VisualizationParameters(
+            plot_type="velocity",
+            subtype="heatmap",
+            feature="gene_0",
+        ),
+        context=DummyCtx(),
+    )
+    assert captured["var_names"] == ["gene_0"]
+    fig_feature.clf()
+
+    fig_default = await viz_vel._create_velocity_heatmap(
+        adata,
+        VisualizationParameters(plot_type="velocity", subtype="heatmap"),
+        context=DummyCtx(),
+    )
+    assert captured["var_names"] == list(adata.var_names[:6])
+    fig_default.clf()
 
 
 @pytest.mark.asyncio
@@ -452,3 +548,33 @@ async def test_paga_success_recompute_and_uns_group_shortcut(
     assert calls["paga"] == 0
     assert ax2.get_title() == "Custom PAGA"
     fig2.clf()
+
+
+@pytest.mark.asyncio
+async def test_paga_auto_selects_first_categorical_cluster_key(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    calls: dict[str, object] = {"groups": None}
+    import scanpy as sc
+
+    def _paga(_adata, groups=None):
+        calls["groups"] = groups
+
+    def _plot_paga(*_args, **kwargs):
+        kwargs["ax"].scatter([0], [0], c=[1.0])
+
+    monkeypatch.setattr(sc.tl, "paga", _paga)
+    monkeypatch.setattr(sc.pl, "paga", _plot_paga)
+
+    fig, ax = plt.subplots()
+    monkeypatch.setattr(viz_vel, "create_figure_from_params", lambda *_a, **_k: (fig, [ax]))
+
+    out = await viz_vel._create_velocity_paga_plot(
+        adata,
+        VisualizationParameters(plot_type="velocity", subtype="paga"),
+        context=DummyCtx(),
+    )
+    assert out is fig
+    assert calls["groups"] == "group"
+    fig.clf()

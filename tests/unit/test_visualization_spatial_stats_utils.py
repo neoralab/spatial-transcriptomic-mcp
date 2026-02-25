@@ -172,6 +172,38 @@ async def test_co_occurrence_visualization_handles_missing_and_figsize_logic(
 
 
 @pytest.mark.asyncio
+async def test_co_occurrence_visualization_uses_custom_figsize_and_title(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    adata.obs["group"] = adata.obs["group"].astype("category")
+    adata.uns["group_co_occurrence"] = {"dummy": True}
+    monkeypatch.setattr(viz_ss, "require", lambda *_a, **_k: None)
+    captured: dict[str, object] = {}
+
+    def _co(*_args, **kwargs):
+        captured["figsize"] = kwargs.get("figsize")
+        plt.figure()
+
+    monkeypatch.setitem(sys.modules, "squidpy", _fake_squidpy_module(co_occurrence=_co))
+
+    fig = await viz_ss._create_co_occurrence_visualization(
+        adata,
+        VisualizationParameters(
+            plot_type="statistics",
+            subtype="co_occurrence",
+            cluster_key="group",
+            figure_size=(9, 4),
+            title="Co Title",
+        ),
+    )
+    assert captured["figsize"] == (9, 4)
+    assert fig._suptitle is not None
+    assert fig._suptitle.get_text() == "Co Title"
+    fig.clf()
+
+
+@pytest.mark.asyncio
 async def test_ripley_visualization_missing_and_success(minimal_spatial_adata, monkeypatch):
     adata = minimal_spatial_adata.copy()
     monkeypatch.setattr(viz_ss, "require", lambda *_a, **_k: None)
@@ -228,6 +260,24 @@ def test_moran_visualization_missing_and_zero_pvalue_branch(minimal_spatial_adat
     fig.clf()
 
 
+def test_moran_visualization_respects_custom_figure_size(minimal_spatial_adata):
+    adata = minimal_spatial_adata.copy()
+    adata.uns["moranI"] = pd.DataFrame(
+        {"I": [0.5, 0.2], "pval_norm": [0.01, 0.2]},
+        index=["gene_0", "gene_1"],
+    )
+    fig = viz_ss._create_moran_visualization(
+        adata,
+        VisualizationParameters(
+            plot_type="statistics",
+            subtype="moran",
+            figure_size=(7, 4),
+        ),
+    )
+    assert tuple(fig.get_size_inches()) == pytest.approx((7.0, 4.0))
+    fig.clf()
+
+
 @pytest.mark.asyncio
 async def test_centrality_visualization_missing_and_success(minimal_spatial_adata, monkeypatch):
     adata = minimal_spatial_adata.copy()
@@ -267,6 +317,39 @@ async def test_centrality_visualization_missing_and_success(minimal_spatial_adat
     assert called["cluster_key"] == "group"
     assert called["figsize"] == (10, 5)
     assert fig._suptitle is not None
+    fig.clf()
+
+
+@pytest.mark.asyncio
+async def test_centrality_visualization_uses_custom_figsize(minimal_spatial_adata, monkeypatch):
+    adata = minimal_spatial_adata.copy()
+    adata.uns["group_centrality_scores"] = pd.DataFrame(
+        {"degree": [0.2, 0.5], "closeness": [0.3, 0.4]}
+    )
+    monkeypatch.setattr(viz_ss, "require", lambda *_a, **_k: None)
+    captured: dict[str, object] = {}
+
+    def _centrality(*_args, **kwargs):
+        captured["figsize"] = kwargs.get("figsize")
+        plt.figure()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "squidpy",
+        _fake_squidpy_module(centrality=_centrality),
+    )
+
+    fig = await viz_ss._create_centrality_visualization(
+        adata,
+        VisualizationParameters(
+            plot_type="statistics",
+            subtype="centrality",
+            cluster_key="group",
+            figure_size=(8, 6),
+        ),
+        context=DummyCtx(),
+    )
+    assert captured["figsize"] == (8, 6)
     fig.clf()
 
 
@@ -316,3 +399,63 @@ async def test_getis_ord_visualization_validation_and_success(
     assert any("Plotting Getis-Ord results for 2 genes" in msg for msg in ctx.infos)
     assert len(fig.axes) >= 2
     fig.clf()
+
+
+@pytest.mark.asyncio
+async def test_getis_ord_default_gene_selection_single_panel_title_and_missing_panel_data(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    adata.obs["gene_0_getis_ord_z"] = np.linspace(-2, 2, adata.n_obs)
+    adata.obs["gene_0_getis_ord_p"] = np.linspace(0.001, 0.1, adata.n_obs)
+    adata.obs["gene_1_getis_ord_z"] = np.linspace(1, -1, adata.n_obs)
+    adata.obs["gene_1_getis_ord_p"] = np.linspace(0.01, 0.2, adata.n_obs)
+
+    monkeypatch.setattr(viz_ss, "auto_spot_size", lambda *_a, **_k: 12.0)
+    monkeypatch.setattr(viz_ss, "require_spatial_coords", lambda _a: _a.obsm["spatial"])
+
+    fig_default = await viz_ss._create_getis_ord_visualization(
+        adata,
+        VisualizationParameters(
+            plot_type="statistics",
+            subtype="getis_ord",
+            feature=None,
+            add_gene_labels=False,
+        ),
+        context=DummyCtx(),
+    )
+    assert len(fig_default.axes) >= 2
+    fig_default.clf()
+
+    fig_single = await viz_ss._create_getis_ord_visualization(
+        adata,
+        VisualizationParameters(
+            plot_type="statistics",
+            subtype="getis_ord",
+            feature="gene_0",
+        ),
+        context=DummyCtx(),
+    )
+    assert "Getis-Ord Gi*" in fig_single.axes[0].get_title()
+    fig_single.clf()
+
+    adata2 = adata.copy()
+    adata2.obs["gene_2_getis_ord_z"] = np.linspace(-1, 1, adata2.n_obs)
+    adata2.obs["gene_2_getis_ord_p"] = np.linspace(0.01, 0.2, adata2.n_obs)
+
+    def _coords_and_drop(_a):
+        del _a.obs["gene_2_getis_ord_p"]
+        return _a.obsm["spatial"]
+
+    monkeypatch.setattr(viz_ss, "require_spatial_coords", _coords_and_drop)
+    fig_missing = await viz_ss._create_getis_ord_visualization(
+        adata2,
+        VisualizationParameters(
+            plot_type="statistics",
+            subtype="getis_ord",
+            feature="gene_2",
+        ),
+        context=DummyCtx(),
+    )
+    assert "No Data" in fig_missing.axes[0].get_title()
+    fig_missing.clf()
