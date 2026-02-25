@@ -236,6 +236,39 @@ async def test_create_feature_visualization_routes_multi_feature_path(
 
 
 @pytest.mark.asyncio
+async def test_create_feature_visualization_pca_uses_first_two_components_and_default_cluster(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    adata.obsm["X_pca"] = np.column_stack(
+        [np.arange(adata.n_obs), np.arange(adata.n_obs), np.arange(adata.n_obs)]
+    )
+    sentinel = plt.figure()
+
+    monkeypatch.setattr(viz_feature, "get_cluster_key", lambda *_args, **_kwargs: "group")
+
+    async def _validated(*_args, **_kwargs):
+        return ["group"]
+
+    async def _single(_adata, _params, _feature, basis, coords):
+        assert basis == "pca"
+        assert coords.shape[1] == 2
+        return sentinel
+
+    monkeypatch.setattr(viz_feature, "get_validated_features", _validated)
+    monkeypatch.setattr(viz_feature, "_create_single_feature_plot", _single)
+
+    out = await viz_feature.create_feature_visualization(
+        adata,
+        VisualizationParameters(plot_type="feature", basis="pca", feature=None),
+        context=DummyCtx(),
+    )
+
+    assert out is sentinel
+    plt.close(sentinel)
+
+
+@pytest.mark.asyncio
 async def test_create_single_feature_plot_numeric_obs_branch_hides_axes(
     minimal_spatial_adata,
 ):
@@ -259,6 +292,81 @@ async def test_create_single_feature_plot_numeric_obs_branch_hides_axes(
     assert fig is not None
     assert fig.axes[0].get_title() == "score (pca)"
     assert not fig.axes[0].axison
+    plt.close(fig)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("color_scale", ["log", "sqrt"])
+async def test_create_single_feature_plot_applies_gene_scaling_and_umap_axis_labels(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch, color_scale: str
+):
+    adata = minimal_spatial_adata.copy()
+    coords = np.column_stack([np.arange(adata.n_obs), np.arange(adata.n_obs)])
+    called = {"log": 0, "sqrt": 0}
+    orig_log1p = viz_feature.np.log1p
+    orig_sqrt = viz_feature.np.sqrt
+
+    def _log1p(arr):
+        called["log"] += 1
+        return orig_log1p(arr)
+
+    def _sqrt(arr):
+        called["sqrt"] += 1
+        return orig_sqrt(arr)
+
+    monkeypatch.setattr(viz_feature.np, "log1p", _log1p)
+    monkeypatch.setattr(viz_feature.np, "sqrt", _sqrt)
+
+    fig = await viz_feature._create_single_feature_plot(
+        adata,
+        VisualizationParameters(
+            plot_type="feature",
+            basis="umap",
+            feature="gene_0",
+            color_scale=color_scale,
+            show_colorbar=False,
+        ),
+        "gene_0",
+        "umap",
+        coords,
+    )
+    assert fig.axes[0].get_xlabel() == "UMAP1"
+    assert fig.axes[0].get_ylabel() == "UMAP2"
+    if color_scale == "log":
+        assert called["log"] >= 1
+    else:
+        assert called["sqrt"] >= 1
+    plt.close(fig)
+
+
+@pytest.mark.asyncio
+async def test_create_single_feature_plot_numeric_obs_branch_adds_colorbar(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    adata.obs["score"] = np.linspace(0, 1, adata.n_obs)
+    adata.obsm["X_pca"] = np.column_stack([np.arange(adata.n_obs), np.arange(adata.n_obs)])
+    calls = {"count": 0}
+
+    monkeypatch.setattr(
+        viz_feature,
+        "add_colorbar",
+        lambda *_args, **_kwargs: calls.__setitem__("count", calls["count"] + 1),
+    )
+
+    fig = await viz_feature._create_single_feature_plot(
+        adata,
+        VisualizationParameters(
+            plot_type="feature",
+            basis="pca",
+            feature="score",
+            show_colorbar=True,
+        ),
+        "score",
+        "pca",
+        adata.obsm["X_pca"],
+    )
+    assert calls["count"] == 1
     plt.close(fig)
 
 
@@ -288,6 +396,88 @@ async def test_create_multi_feature_plot_umap_handles_gene_and_numeric_obs(
 
     assert fig is not None
     assert "_feature_viz_temp_99" not in adata.obs.columns
+    plt.close(fig)
+
+
+@pytest.mark.asyncio
+async def test_create_multi_feature_plot_breaks_when_axes_shorter_than_features(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    fig, ax = plt.subplots()
+    monkeypatch.setattr(
+        viz_feature,
+        "setup_multi_panel_figure",
+        lambda **_kwargs: (fig, np.array([ax])),
+    )
+
+    out = await viz_feature._create_multi_feature_plot(
+        adata,
+        VisualizationParameters(plot_type="feature", basis="spatial", show_colorbar=False),
+        context=None,
+        features=["gene_0", "gene_1"],
+        basis="spatial",
+        coords=adata.obsm["spatial"],
+    )
+    assert out is fig
+    plt.close(fig)
+
+
+@pytest.mark.asyncio
+async def test_create_multi_feature_plot_umap_sqrt_with_colorbars(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    adata.obsm["X_umap"] = np.column_stack([np.arange(adata.n_obs), np.arange(adata.n_obs)])
+    adata.obs["score"] = np.linspace(0, 10, adata.n_obs)
+    calls = {"count": 0}
+    monkeypatch.setattr(
+        viz_feature.plt,
+        "colorbar",
+        lambda *_args, **_kwargs: calls.__setitem__("count", calls["count"] + 1),
+    )
+
+    fig = await viz_feature._create_multi_feature_plot(
+        adata,
+        VisualizationParameters(
+            plot_type="feature",
+            basis="umap",
+            feature=["gene_0", "score"],
+            show_colorbar=True,
+            color_scale="sqrt",
+        ),
+        context=None,
+        features=["gene_0", "score"],
+        basis="umap",
+        coords=adata.obsm["X_umap"],
+    )
+    assert calls["count"] >= 2
+    plt.close(fig)
+
+
+@pytest.mark.asyncio
+async def test_create_multi_feature_plot_spatial_categorical_inverts_y(
+    minimal_spatial_adata,
+):
+    adata = minimal_spatial_adata.copy()
+    adata.obs["cluster"] = pd.Categorical(
+        ["A"] * (adata.n_obs // 2) + ["B"] * (adata.n_obs - adata.n_obs // 2)
+    )
+
+    fig = await viz_feature._create_multi_feature_plot(
+        adata,
+        VisualizationParameters(
+            plot_type="feature",
+            basis="spatial",
+            feature=["cluster"],
+            show_colorbar=False,
+        ),
+        context=None,
+        features=["cluster"],
+        basis="spatial",
+        coords=adata.obsm["spatial"],
+    )
+    assert fig.axes[0].yaxis_inverted()
     plt.close(fig)
 
 
@@ -341,5 +531,75 @@ async def test_create_lr_pairs_visualization_limits_pairs_and_reports_titles(
     assert any("Too many LR pairs" in msg for msg in ctx.infos)
     assert any("Visualizing 4 LR pairs" in msg for msg in ctx.infos)
     assert any(" vs " in title for title in titles)
+    assert "_lr_viz_temp_99" not in adata.obs.columns
+    plt.close(fig)
+
+
+@pytest.mark.asyncio
+async def test_create_lr_pairs_visualization_spatial_log_pearson_with_colorbars(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    calls = {"count": 0}
+    monkeypatch.setattr(
+        viz_feature.plt,
+        "colorbar",
+        lambda *_args, **_kwargs: calls.__setitem__("count", calls["count"] + 1),
+    )
+    monkeypatch.setattr(viz_feature, "pearsonr", lambda *_args, **_kwargs: (0.42, 0.01))
+
+    fig = await viz_feature._create_lr_pairs_visualization(
+        adata,
+        VisualizationParameters(
+            plot_type="feature",
+            basis="spatial",
+            show_colorbar=True,
+            show_correlation_stats=True,
+            correlation_method="pearson",
+            color_scale="log",
+        ),
+        context=DummyCtx(),
+        lr_pairs=[("gene_0", "gene_1")],
+        basis="spatial",
+        coords=adata.obsm["spatial"],
+    )
+
+    assert calls["count"] >= 2
+    assert any("Correlation:" in ax.get_title() for ax in fig.axes)
+    assert "_lr_viz_temp_99" not in adata.obs.columns
+    plt.close(fig)
+
+
+@pytest.mark.asyncio
+async def test_create_lr_pairs_visualization_umap_spearman_with_colorbars(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    adata.obsm["X_umap"] = np.column_stack([np.arange(adata.n_obs), np.arange(adata.n_obs)])
+    calls = {"count": 0}
+    monkeypatch.setattr(
+        viz_feature.plt,
+        "colorbar",
+        lambda *_args, **_kwargs: calls.__setitem__("count", calls["count"] + 1),
+    )
+    monkeypatch.setattr(viz_feature, "spearmanr", lambda *_args, **_kwargs: (0.33, 0.02))
+
+    fig = await viz_feature._create_lr_pairs_visualization(
+        adata,
+        VisualizationParameters(
+            plot_type="feature",
+            basis="umap",
+            show_colorbar=True,
+            show_correlation_stats=True,
+            correlation_method="spearman",
+        ),
+        context=DummyCtx(),
+        lr_pairs=[("gene_2", "gene_3")],
+        basis="umap",
+        coords=adata.obsm["X_umap"],
+    )
+
+    assert calls["count"] >= 2
+    assert any("Correlation:" in ax.get_title() for ax in fig.axes)
     assert "_lr_viz_temp_99" not in adata.obs.columns
     plt.close(fig)
