@@ -124,6 +124,17 @@ def test_configure_mps_is_idempotent_and_preserves_existing_env(
     assert os_environ_value("PYTORCH_MPS_HIGH_WATERMARK_RATIO") == "0.7"
 
 
+def test_configure_mps_returns_early_when_already_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(du, "_mps_configured", True)
+    monkeypatch.setenv("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.9")
+
+    du._configure_mps()
+
+    assert os_environ_value("PYTORCH_MPS_HIGH_WATERMARK_RATIO") == "0.9"
+
+
 def os_environ_value(key: str) -> str | None:
     import os
 
@@ -199,4 +210,24 @@ def test_get_ot_backend_selects_torch_backend_when_cuda_available(
 
     monkeypatch.setattr(du, "cuda_available", lambda: False)
     backend = du.get_ot_backend(use_gpu=True)
+    assert backend.name == "numpy"
+
+
+def test_get_ot_backend_uses_numpy_when_gpu_not_requested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeBackend:
+        class TorchBackend:
+            def __init__(self) -> None:
+                self.name = "torch"
+
+        class NumpyBackend:
+            def __init__(self) -> None:
+                self.name = "numpy"
+
+    fake_ot = SimpleNamespace(backend=_FakeBackend)
+    monkeypatch.setitem(sys.modules, "ot", fake_ot)
+    monkeypatch.setattr(du, "cuda_available", lambda: True)
+
+    backend = du.get_ot_backend(use_gpu=False)
     assert backend.name == "numpy"
