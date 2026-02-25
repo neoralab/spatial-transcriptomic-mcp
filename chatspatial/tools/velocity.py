@@ -296,7 +296,9 @@ async def analyze_velocity_with_velovi(
             if np.all(t_max > 0):
                 scaling = 20 / t_max
             else:
-                scaling = np.where(t_max > 0, 20 / t_max, 1.0)
+                scaling = np.ones_like(t_max, dtype=float)
+                positive_mask = t_max > 0
+                scaling[positive_mask] = 20 / t_max[positive_mask]
         else:
             t_max = np.max(t)
             scaling = 20 / t_max if t_max > 0 else 1.0
