@@ -301,10 +301,10 @@ def _install_classical_integration_mocks(
         "chatspatial.tools.integration.validate_adata_basics",
         lambda *_args, **_kwargs: None,
     )
-    monkeypatch.setattr(
-        "scanpy.pp.highly_variable_genes",
-        lambda adata, **_kwargs: adata.var.__setitem__("highly_variable", True),
-    )
+    def _set_hvg_true(adata, **_kwargs):
+        adata.var.loc[:, "highly_variable"] = True
+
+    monkeypatch.setattr("scanpy.pp.highly_variable_genes", _set_hvg_true)
     monkeypatch.setattr("scanpy.pp.scale", lambda *_args, **_kwargs: None)
 
     def _fake_pca(adata, n_comps, svd_solver, zero_center=False):
@@ -327,6 +327,10 @@ def _install_classical_integration_mocks(
         "chatspatial.tools.integration.require",
         lambda *_args, **_kwargs: None,
     )
+
+
+def _set_hvg_value(adata, value: bool) -> None:
+    adata.var.loc[:, "highly_variable"] = bool(value)
 
 
 
@@ -485,7 +489,7 @@ def test_integrate_multiple_samples_cleans_var_na_and_diffmap_artifacts(
     monkeypatch.setattr("scanpy.tl.umap", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         "scanpy.pp.highly_variable_genes",
-        lambda adata, **_kwargs: adata.var.__setitem__("highly_variable", True),
+        lambda adata, **_kwargs: _set_hvg_value(adata, True),
     )
 
     def _fake_pca(adata, n_comps, svd_solver, zero_center=False):
@@ -536,7 +540,7 @@ def test_integrate_multiple_samples_raises_when_hvg_recalc_still_empty(
     )
     monkeypatch.setattr(
         "scanpy.pp.highly_variable_genes",
-        lambda adata, **_kwargs: adata.var.__setitem__("highly_variable", False),
+        lambda adata, **_kwargs: _set_hvg_value(adata, False),
     )
 
     with pytest.raises(DataError, match="No highly variable genes found"):
@@ -559,7 +563,7 @@ def test_integrate_multiple_samples_sparse_zero_variance_and_scale_fallback(
     )
     monkeypatch.setattr(
         "scanpy.pp.highly_variable_genes",
-        lambda adata, **_kwargs: adata.var.__setitem__("highly_variable", True),
+        lambda adata, **_kwargs: _set_hvg_value(adata, True),
     )
 
     scale_calls: list[bool] = []
@@ -624,7 +628,7 @@ def test_integrate_multiple_samples_pca_nan_inf_and_solver_failures(
     )
     monkeypatch.setattr(
         "scanpy.pp.highly_variable_genes",
-        lambda adata, **_kwargs: adata.var.__setitem__("highly_variable", True),
+        lambda adata, **_kwargs: _set_hvg_value(adata, True),
     )
 
     def _scale_nan(adata_obj, **_kwargs):
