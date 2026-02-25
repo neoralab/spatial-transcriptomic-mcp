@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import replace
 from types import ModuleType, SimpleNamespace
 
 import numpy as np
@@ -104,6 +105,38 @@ def test_rctd_extract_results_full_mode_with_fake_r(monkeypatch: pytest.MonkeyPa
     assert out.shape == (2, 2)
 
 
+def test_rctd_extract_results_doublet_mode_with_fake_r(monkeypatch: pytest.MonkeyPatch):
+    def _ro_r(code: str):
+        if code.strip() == "as.matrix(weights_matrix)":
+            return np.array([[1.0, 0.0], [0.3, 0.7]])
+        if code.strip() == "cell_type_names":
+            return ["A", "B"]
+        if code.strip() == "spot_names":
+            return ["s1", "s2"]
+        return None
+
+    _install_fake_r_modules(monkeypatch, ro_r=_ro_r)
+    out = rctd_module._extract_rctd_results("doublet")
+    assert out.shape == (2, 2)
+    assert np.isclose(out.loc["s1", "A"], 1.0)
+
+
+def test_rctd_extract_results_multi_mode_with_fake_r(monkeypatch: pytest.MonkeyPatch):
+    def _ro_r(code: str):
+        if code.strip() == "as.matrix(weights_matrix)":
+            return np.array([[0.4, 0.6]])
+        if code.strip() == "cell_type_names":
+            return ["A", "B"]
+        if code.strip() == "spot_names":
+            return ["s1"]
+        return None
+
+    _install_fake_r_modules(monkeypatch, ro_r=_ro_r)
+    out = rctd_module._extract_rctd_results("multi")
+    assert out.shape == (1, 2)
+    assert np.isclose(out.loc["s1", "B"], 0.6)
+
+
 def test_spotlight_wraps_runtime_errors_as_processing_error(
     minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
 ):
@@ -121,6 +154,153 @@ def test_spotlight_wraps_runtime_errors_as_processing_error(
 
     with pytest.raises(ProcessingError, match="SPOTlight deconvolution failed"):
         spotlight_module.deconvolve(data)
+
+
+def test_spotlight_missing_spatial_coords_raises_processing_error(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    data = replace(_prepared_data(minimal_spatial_adata), spatial_coords=None)
+
+    _install_fake_r_modules(monkeypatch, ro_r=lambda _code: None)
+    monkeypatch.setattr(
+        spotlight_module, "validate_r_package", lambda *_args, **_kwargs: None
+    )
+
+    with pytest.raises(ProcessingError, match="requires spatial coordinates"):
+        spotlight_module.deconvolve(data)
+
+
+def test_spotlight_success_casts_counts_and_returns_stats(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    data = _prepared_data(minimal_spatial_adata)
+    data.spatial.X = data.spatial.X.astype(np.float32)
+    data.reference.X = data.reference.X.astype(np.float64)
+    data.reference.obs["cell_type"] = ["A/B"] * (data.reference.n_obs // 2) + ["B C"] * (
+        data.reference.n_obs - data.reference.n_obs // 2
+    )
+
+    def _ro_r(code: str):
+        text = code.strip()
+        if text == "spotlight_result$mat":
+            return np.array([[0.9, 0.1], [0.4, 0.6]], dtype=float)
+        if text == "rownames(spotlight_result$mat)":
+            return ["s1", "s2"]
+        if text == "colnames(spotlight_result$mat)":
+            return ["A_B", "B_C"]
+        return None
+
+    _install_fake_r_modules(monkeypatch, ro_r=_ro_r)
+    monkeypatch.setattr(
+        spotlight_module, "validate_r_package", lambda *_args, **_kwargs: None
+    )
+
+    proportions, stats = spotlight_module.deconvolve(
+        data,
+        n_top_genes=1234,
+        nmf_model="std",
+        min_prop=0.05,
+        scale=False,
+        weight_id="weight_col",
+    )
+
+    import rpy2.robjects as ro
+
+    assert ro.globalenv["spatial_counts"].dtype == np.int32
+    assert ro.globalenv["reference_counts"].dtype == np.int32
+    assert ro.globalenv["cell_types"][0] == "A_B"
+    assert ro.globalenv["cell_types"][-1] == "B_C"
+    assert proportions.shape == (2, 2)
+    assert list(proportions.columns) == ["A_B", "B_C"]
+    assert stats["method"] == "SPOTlight"
+    assert stats["n_top_genes"] == 1234
+    assert stats["nmf_model"] == "std"
+    assert stats["min_prop"] == pytest.approx(0.05)
+
+
+def test_rctd_deconvolve_filters_rare_types_and_raises_when_insufficient_types(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    data = _prepared_data(minimal_spatial_adata)
+    data.reference.obs["cell_type"] = ["A"] * (data.reference.n_obs - 1) + ["B"]
+
+    _install_fake_r_modules(monkeypatch, ro_r=lambda _code: None)
+    monkeypatch.setattr(rctd_module, "validate_r_package", lambda *_args, **_kwargs: None)
+
+    with pytest.warns(UserWarning, match="Filtering 1 rare types"):
+        with pytest.raises(
+            ProcessingError, match="RCTD requires at least 2 cell types"
+        ):
+            rctd_module.deconvolve(data, mode="full")
+
+
+def test_rctd_deconvolve_raises_for_negative_proportions(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    data = _prepared_data(minimal_spatial_adata)
+    _install_fake_r_modules(monkeypatch, ro_r=lambda _code: None)
+    monkeypatch.setattr(rctd_module, "validate_r_package", lambda *_args, **_kwargs: None)
+
+    bad = pd.DataFrame(
+        {"A": [0.5, -0.1], "B": [0.5, 1.1]},
+        index=["s1", "s2"],
+    )
+    monkeypatch.setattr(rctd_module, "_extract_rctd_results", lambda _mode: bad)
+
+    with pytest.raises(ProcessingError, match="negative values"):
+        rctd_module.deconvolve(data, mode="full")
+
+
+def test_rctd_deconvolve_warns_on_nan_and_returns_stats(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    data = _prepared_data(minimal_spatial_adata)
+    _install_fake_r_modules(monkeypatch, ro_r=lambda _code: None)
+    monkeypatch.setattr(rctd_module, "validate_r_package", lambda *_args, **_kwargs: None)
+
+    out_df = pd.DataFrame(
+        {"A": [0.7, np.nan], "B": [0.3, 0.6]},
+        index=["s1", "s2"],
+    )
+    monkeypatch.setattr(rctd_module, "_extract_rctd_results", lambda _mode: out_df)
+
+    with pytest.warns(UserWarning, match="NaN values"):
+        proportions, stats = rctd_module.deconvolve(data, mode="full")
+
+    assert proportions.shape == (2, 2)
+    assert stats["method"] == "RCTD-full"
+
+
+def test_rctd_deconvolve_without_spatial_coords_uses_default_coords(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    data = replace(_prepared_data(minimal_spatial_adata), spatial_coords=None)
+
+    _install_fake_r_modules(monkeypatch, ro_r=lambda _code: None)
+    monkeypatch.setattr(rctd_module, "validate_r_package", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        rctd_module,
+        "_extract_rctd_results",
+        lambda _mode: pd.DataFrame(
+            {
+                "A": np.tile([0.8, 0.1], data.n_spots // 2 + data.n_spots % 2)[: data.n_spots],
+                "B": np.tile([0.2, 0.9], data.n_spots // 2 + data.n_spots % 2)[: data.n_spots],
+            },
+            index=list(data.spatial.obs_names),
+        ),
+    )
+
+    proportions, stats = rctd_module.deconvolve(data, mode="full")
+
+    import rpy2.robjects as ro
+
+    coords = ro.globalenv["coords"]
+    assert list(coords.columns) == ["x", "y"]
+    assert list(coords.index) == list(data.spatial.obs_names)
+    assert list(coords["x"]) == list(range(data.n_spots))
+    assert list(coords["y"]) == [0] * data.n_spots
+    assert proportions.shape == (data.n_spots, 2)
+    assert stats["method"] == "RCTD-full"
 
 
 def test_card_wraps_runtime_errors_as_processing_error(
