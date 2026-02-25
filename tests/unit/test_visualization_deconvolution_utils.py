@@ -144,6 +144,20 @@ async def test_get_deconvolution_data_reads_metadata_keys(minimal_spatial_adata)
 
 
 @pytest.mark.asyncio
+async def test_get_deconvolution_data_errors_when_proportions_key_missing(minimal_spatial_adata):
+    adata = minimal_spatial_adata.copy()
+    _add_deconv_metadata(
+        adata,
+        "mock",
+        proportions_key="missing_props",
+        cell_types=["A", "B"],
+    )
+
+    with pytest.raises(DataNotFoundError, match="Proportions data 'missing_props' not found"):
+        await viz_deconv.get_deconvolution_data(adata, method="mock")
+
+
+@pytest.mark.asyncio
 async def test_get_deconvolution_data_fallbacks_to_generic_cell_types_with_warning(
     minimal_spatial_adata,
 ):
@@ -381,6 +395,48 @@ async def test_create_umap_proportions_renders_top_n_and_hides_unused_axes(
 
 
 @pytest.mark.asyncio
+async def test_create_umap_proportions_hides_unused_axes_for_four_panels(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    adata.obsm["X_umap"] = np.column_stack([np.arange(adata.n_obs), np.arange(adata.n_obs)])
+    base = _mock_deconv_data(adata, method="rctd")
+    proportions = base.proportions.copy()
+    proportions["NK"] = np.linspace(0.0, 0.6, adata.n_obs)
+    data = viz_deconv.DeconvolutionData(
+        proportions=proportions,
+        method=base.method,
+        cell_types=list(proportions.columns),
+        proportions_key=base.proportions_key,
+        dominant_type_key=base.dominant_type_key,
+    )
+
+    class _CB:
+        def set_label(self, *_args, **_kwargs):
+            return None
+
+    async def _get_data(*_args, **_kwargs):
+        return data
+
+    monkeypatch.setattr(viz_deconv, "get_deconvolution_data", _get_data)
+    monkeypatch.setattr(viz_deconv.plt, "colorbar", lambda *_a, **_k: _CB())
+
+    fig = await viz_deconv._create_umap_proportions(
+        adata,
+        VisualizationParameters(
+            plot_type="deconvolution",
+            subtype="umap",
+            n_cell_types=4,
+        ),
+        context=None,
+    )
+    assert len(fig.axes) == 6
+    hidden_axes = [ax for ax in fig.axes if not ax.axison]
+    assert len(hidden_axes) >= 2
+    fig.clf()
+
+
+@pytest.mark.asyncio
 async def test_create_spatial_multi_deconvolution_handles_nan_and_temp_cleanup(
     minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
 ):
@@ -501,6 +557,30 @@ async def test_create_card_imputation_dominant_and_specific_feature_paths(
     assert calls["count"] == 1
     assert any("visualization created successfully" in m for m in ctx.infos)
     fig2.clf()
+
+
+@pytest.mark.asyncio
+async def test_create_card_imputation_defaults_to_dominant_feature(minimal_spatial_adata):
+    adata = minimal_spatial_adata.copy()
+    n = adata.n_obs
+    adata.uns["card_imputation"] = {
+        "proportions": pd.DataFrame(
+            {
+                "T": np.linspace(0.2, 0.7, n),
+                "B": np.linspace(0.8, 0.3, n),
+            }
+        ),
+        "coordinates": pd.DataFrame({"x": np.arange(n), "y": np.arange(n)}),
+        "resolution_increase": 1.2,
+    }
+
+    fig = await viz_deconv._create_card_imputation(
+        adata,
+        VisualizationParameters(plot_type="deconvolution", subtype="imputation"),
+        context=None,
+    )
+    assert "Dominant Cell Types" in fig.axes[0].get_title()
+    fig.clf()
 
 
 @pytest.mark.asyncio

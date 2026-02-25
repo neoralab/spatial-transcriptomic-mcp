@@ -112,6 +112,10 @@ def test_parse_lr_pair_supports_common_formats():
     assert viz_cc._parse_lr_pair("NO_SEPARATOR") == ("NO", "SEPARATOR")
 
 
+def test_parse_lr_pair_falls_back_when_no_separator():
+    assert viz_cc._parse_lr_pair("NOSPLIT") == ("NOSPLIT", "NOSPLIT")
+
+
 def test_convert_to_liana_format_matrix_contract():
     results = pd.DataFrame(
         {
@@ -131,6 +135,23 @@ def test_convert_to_liana_format_matrix_contract():
     assert set(out["source"]) == {"A", "B"}
     assert set(out["target"]) == {"A", "B"}
     assert out["lr_means"].min() >= 0
+
+
+def test_convert_to_liana_format_handles_empty_and_passthrough_cases():
+    empty = viz_cc._convert_to_liana_format(
+        pd.DataFrame(), pvalues=None, method="cellphonedb"
+    )
+    assert empty.empty
+
+    liana_ready = _mock_liana_results()
+    out_liana = viz_cc._convert_to_liana_format(
+        liana_ready, pvalues=None, method="liana"
+    )
+    out_passthrough = viz_cc._convert_to_liana_format(
+        liana_ready, pvalues=None, method="cellphonedb"
+    )
+    assert out_liana is liana_ready
+    assert out_passthrough is liana_ready
 
 
 def test_convert_to_liana_format_cellchat_3d_contract():
@@ -162,6 +183,87 @@ def test_convert_to_liana_format_cellchat_3d_contract():
     assert len(out) == 2
     assert set(out["ligand_complex"]) == {"L1", "L2"}
     assert out["magnitude_rank"].between(0, 1).all()
+
+
+def test_cellchat_3d_to_liana_format_handles_fallback_lr_nan_pval_and_empty_rows():
+    results = pd.DataFrame(
+        {
+            "interaction_name": ["L1_R1"],
+            "ligand": ["L1"],
+            "receptor": ["R1"],
+        }
+    )
+    prob = np.zeros((1, 1, 2), dtype=float)
+    prob[0, 0, 1] = 0.7
+    pval = np.ones((1, 1, 2), dtype=float)
+    pval[0, 0, 1] = np.nan
+
+    out = viz_cc._cellchat_3d_to_liana_format(
+        results=results,
+        method_data={
+            "prob_matrix": prob,
+            "pval_matrix": pval,
+            "cell_type_names": ["A"],
+        },
+    )
+    assert len(out) == 1
+    assert out.iloc[0]["ligand_complex"] == "LR_1"
+    assert out.iloc[0]["receptor_complex"] == "LR_1"
+    assert out.iloc[0]["magnitude_rank"] == 1.0
+
+    empty = viz_cc._cellchat_3d_to_liana_format(
+        results=results,
+        method_data={
+            "prob_matrix": np.zeros((1, 1, 1), dtype=float),
+            "pval_matrix": np.ones((1, 1, 1), dtype=float),
+            "cell_type_names": ["A"],
+        },
+    )
+    assert empty.empty
+
+
+def test_matrix_to_liana_format_fallback_to_all_numeric_and_handles_nan_and_keyerror():
+    nan_rank = viz_cc._matrix_to_liana_format(
+        results=pd.DataFrame({"A_B": [1.0]}, index=["PAIR_1"]),
+        pvalues=pd.DataFrame({"A_B": [np.nan]}, index=["PAIR_1"]),
+        method="cellphonedb",
+    )
+    assert len(nan_rank) == 1
+    assert nan_rank.iloc[0]["source"] == "A"
+    assert nan_rank.iloc[0]["target"] == "B"
+    assert nan_rank.iloc[0]["magnitude_rank"] == 1.0
+
+    keyerr_rank = viz_cc._matrix_to_liana_format(
+        results=pd.DataFrame({"A_B": [0.8]}, index=["PAIR_1"]),
+        pvalues=pd.DataFrame({"A_B": [0.2]}, index=["OTHER_PAIR"]),
+        method="cellphonedb",
+    )
+    assert len(keyerr_rank) == 1
+    assert keyerr_rank.iloc[0]["magnitude_rank"] == 1.0
+
+def test_matrix_to_liana_format_returns_empty_for_no_numeric_and_unparsable_pairs():
+    no_numeric = viz_cc._matrix_to_liana_format(
+        results=pd.DataFrame({"interacting_pair": ["L1_R1"]}),
+        pvalues=None,
+        method="cellphonedb",
+    )
+    assert no_numeric.empty
+
+    unparsable_pairs = viz_cc._matrix_to_liana_format(
+        results=pd.DataFrame({"AB": [0.5]}, index=["L1_R1"]),
+        pvalues=None,
+        method="cellphonedb",
+    )
+    assert unparsable_pairs.empty
+
+
+def test_matrix_to_liana_format_skips_invalid_pipe_split():
+    invalid_pipe = viz_cc._matrix_to_liana_format(
+        results=pd.DataFrame({"A|B|C": [0.4]}, index=["L1_R1"]),
+        pvalues=None,
+        method="cellphonedb",
+    )
+    assert invalid_pipe.empty
 
 
 @pytest.mark.asyncio
@@ -214,6 +316,26 @@ async def test_create_cell_communication_visualization_default_routes_to_dotplot
 
 
 @pytest.mark.asyncio
+async def test_create_cell_communication_visualization_defaults_to_dotplot_when_subtype_none_for_cluster(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    data = _mock_cc_data(_mock_liana_results(), analysis_type="cluster")
+    sentinel = object()
+
+    async def _fake_get(*_args, **_kwargs):
+        return data
+
+    monkeypatch.setattr(viz_cc, "get_cell_communication_data", _fake_get)
+    monkeypatch.setattr(viz_cc, "_create_unified_dotplot", lambda *_a, **_k: sentinel)
+
+    params = VisualizationParameters(plot_type="communication", subtype="tileplot")
+    params.subtype = None
+    out = await viz_cc.create_cell_communication_visualization(adata, params)
+    assert out is sentinel
+
+
+@pytest.mark.asyncio
 async def test_create_cell_communication_visualization_spatial_requires_spatial_analysis(
     minimal_spatial_adata,
 ):
@@ -239,6 +361,34 @@ async def test_create_cell_communication_visualization_unknown_subtype_error(
             adata,
             VisualizationParameters(plot_type="communication", subtype="unknown"),
         )
+
+
+@pytest.mark.asyncio
+async def test_create_cell_communication_visualization_logs_context_and_spatial_unknown_lists_available(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    data = _mock_cc_data(
+        _mock_liana_results(),
+        analysis_type="spatial",
+        spatial_scores=np.ones((adata.n_obs, 2), dtype=float),
+    )
+    ctx = DummyCtx()
+
+    async def _fake_get(*_args, **_kwargs):
+        return data
+
+    monkeypatch.setattr(viz_cc, "get_cell_communication_data", _fake_get)
+
+    with pytest.raises(ParameterError, match="Available: spatial, dotplot, tileplot, circle_plot"):
+        await viz_cc.create_cell_communication_visualization(
+            adata,
+            VisualizationParameters(plot_type="communication", subtype="bad"),
+            context=ctx,
+        )
+
+    assert any("Creating cell communication visualization" in m for m in ctx.infos)
+    assert any("Using cellphonedb results" in m for m in ctx.infos)
 
 
 def test_cellchat_3d_to_liana_format_handles_empty_and_normalization():
@@ -382,6 +532,91 @@ def test_create_spatial_lr_visualization_uses_metric_and_handles_missing_pair_co
     fig.clf()
 
 
+def test_create_spatial_lr_visualization_handles_no_metric_with_single_panel(
+    minimal_spatial_adata,
+):
+    adata = minimal_spatial_adata.copy()
+    data = _mock_cc_data(
+        pd.DataFrame({"note": [1]}, index=["L1_R1"]),
+        analysis_type="spatial",
+        lr_pairs=["L1_R1"],
+        spatial_scores=np.ones((adata.n_obs, 1), dtype=float),
+    )
+    fig = viz_cc._create_spatial_lr_visualization(
+        adata,
+        data,
+        VisualizationParameters(plot_type="communication", subtype="spatial"),
+    )
+    assert len(fig.axes) >= 1
+    fig.clf()
+
+
+def test_create_spatial_lr_visualization_falls_back_when_top_pairs_not_in_lr_list_and_hides_extra_axes(
+    minimal_spatial_adata,
+):
+    adata = minimal_spatial_adata.copy()
+    data = _mock_cc_data(
+        pd.DataFrame({"morans": [0.9, 0.8, 0.7, 0.6]}, index=["X1", "X2", "X3", "X4"]),
+        analysis_type="spatial",
+        lr_pairs=["L1_R1", "L2_R2", "L3_R3", "L4_R4"],
+        spatial_scores=np.ones((adata.n_obs, 4), dtype=float),
+    )
+    fig = viz_cc._create_spatial_lr_visualization(
+        adata,
+        data,
+        VisualizationParameters(
+            plot_type="communication",
+            subtype="spatial",
+            plot_top_pairs=4,
+        ),
+    )
+    assert sum(not ax.get_visible() for ax in fig.axes) >= 2
+    fig.clf()
+
+
+def test_create_spatial_lr_visualization_errors_for_empty_selected_pairs_and_missing_scores(
+    minimal_spatial_adata,
+):
+    adata = minimal_spatial_adata.copy()
+    data = viz_cc.CellCommunicationData(
+        results=pd.DataFrame(),
+        method="cellphonedb",
+        analysis_type="spatial",
+        lr_pairs=["L1_R1"],
+        pvalues=None,
+        spatial_scores=np.ones((adata.n_obs, 1), dtype=float),
+        spatial_pvals=None,
+        source_labels=None,
+        target_labels=None,
+        method_data=None,
+    )
+    params = VisualizationParameters(
+        plot_type="communication",
+        subtype="spatial",
+        plot_top_pairs=1,
+    )
+    params.plot_top_pairs = -1
+    with pytest.raises(DataNotFoundError, match="No LR pairs found in spatial results."):
+        viz_cc._create_spatial_lr_visualization(
+            adata,
+            data,
+            params,
+        )
+
+    no_scores_data = _mock_cc_data(
+        pd.DataFrame(),
+        analysis_type="spatial",
+        lr_pairs=[],
+        spatial_scores=None,
+    )
+    with pytest.raises(DataNotFoundError, match="No spatial communication scores found"):
+        viz_cc._create_spatial_lr_visualization(
+            adata,
+            no_scores_data,
+            VisualizationParameters(plot_type="communication", subtype="spatial"),
+        )
+
+
 def test_create_unified_dotplot_validates_required_columns(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(viz_cc, "require", lambda *_a, **_k: None)
     fake_liana = ModuleType("liana")
@@ -471,6 +706,22 @@ def test_create_fallback_dotplot_zero_rank_branch_sets_constant_size():
     )
     sizes = fig.axes[0].collections[0].get_sizes()
     assert np.allclose(sizes, 100.0)
+    fig.clf()
+
+
+def test_create_fallback_dotplot_requires_rank_and_scales_positive_rank():
+    with pytest.raises(DataNotFoundError, match="No ranking column found"):
+        viz_cc._create_fallback_dotplot(
+            _mock_cc_data(_mock_liana_results(include_scores=False)),
+            VisualizationParameters(plot_type="communication", subtype="dotplot"),
+        )
+
+    fig = viz_cc._create_fallback_dotplot(
+        _mock_cc_data(_mock_liana_results()),
+        VisualizationParameters(plot_type="communication", subtype="dotplot"),
+    )
+    sizes = fig.axes[0].collections[0].get_sizes()
+    assert np.max(sizes) > np.min(sizes)
     fig.clf()
 
 

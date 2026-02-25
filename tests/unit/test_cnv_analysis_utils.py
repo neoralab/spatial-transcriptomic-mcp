@@ -11,7 +11,7 @@ from scipy import sparse
 
 from chatspatial.models.data import CNVParameters
 from chatspatial.tools import cnv_analysis as cnv
-from chatspatial.utils.exceptions import ParameterError, ProcessingError
+from chatspatial.utils.exceptions import DependencyError, ParameterError, ProcessingError
 
 
 class DummyCtx:
@@ -554,6 +554,280 @@ def test_infer_cnv_numbat_missing_output_files_raises_processing_error(
     with pytest.raises(ProcessingError, match="Numbat output file not found"):
         cnv._infer_cnv_numbat(
             "d11",
+            adata,
+            CNVParameters(
+                method="numbat",
+                reference_key="cell_type",
+                reference_categories=["A"],
+            ),
+            DummyCtx(adata),
+        )
+
+
+@pytest.mark.asyncio
+async def test_infer_cnv_infercnvpy_cluster_and_dendrogram_success_copies_outputs(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    adata.obs["cell_type"] = ["A"] * 30 + ["B"] * 30
+    adata.var["chromosome"] = ["chr1"] * 12 + ["chr2"] * 12
+    captured: dict[str, object] = {}
+
+    fake_infercnvpy = ModuleType("infercnvpy")
+
+    def _fake_infercnv(adata_obj, **_kwargs):
+        # 75% zeros so sparse median branch uses exact zero
+        arr = np.tile(np.array([0.0, 0.0, 0.0, 2.0]), (adata_obj.n_obs, 1))
+        adata_obj.obsm["X_cnv"] = sparse.csr_matrix(arr)
+        adata_obj.uns["cnv"] = {"ok": True}
+
+    fake_infercnvpy.tl = SimpleNamespace(infercnv=_fake_infercnv)
+    monkeypatch.setitem(__import__("sys").modules, "infercnvpy", fake_infercnvpy)
+    monkeypatch.setattr(cnv, "require", lambda *_a, **_k: None)
+    monkeypatch.setattr(cnv, "export_analysis_result", lambda *_a, **_k: [])
+    monkeypatch.setattr(cnv, "store_analysis_metadata", lambda _adata, **kwargs: captured.update(kwargs))
+    monkeypatch.setattr(cnv.sc.pp, "neighbors", lambda *_a, **_k: None)
+
+    def _fake_leiden(adata_obj, key_added="cnv_clusters"):
+        adata_obj.obs[key_added] = pd.Categorical(
+            ["c0"] * (adata_obj.n_obs // 2) + ["c1"] * (adata_obj.n_obs - adata_obj.n_obs // 2)
+        )
+
+    monkeypatch.setattr(cnv.sc.tl, "leiden", _fake_leiden)
+    monkeypatch.setattr(
+        cnv.sc.tl,
+        "dendrogram",
+        lambda adata_obj, groupby="cnv_clusters": adata_obj.uns.__setitem__(
+            f"dendrogram_{groupby}", {"linkage": "ok"}
+        ),
+    )
+
+    out = await cnv.infer_cnv(
+        "d12",
+        DummyCtx(adata),
+        CNVParameters(
+            method="infercnvpy",
+            reference_key="cell_type",
+            reference_categories=["A"],
+            cluster_cells=True,
+            dendrogram=True,
+        ),
+    )
+
+    assert out.statistics["median_cnv"] == 0.0
+    assert "cnv_clusters" in adata.obs
+    assert "dendrogram_cnv_clusters" in adata.uns
+    assert "obs" in captured["results_keys"]
+    assert "cnv_clusters" in captured["results_keys"]["obs"]
+    assert "dendrogram_cnv_clusters" in captured["results_keys"]["uns"]
+
+
+@pytest.mark.asyncio
+async def test_infer_cnv_infercnvpy_uses_cnv_layer_when_obsm_missing_and_no_chromosome(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    adata.obs["cell_type"] = ["A"] * 30 + ["B"] * 30
+    if "chromosome" in adata.var.columns:
+        del adata.var["chromosome"]
+
+    fake_infercnvpy = ModuleType("infercnvpy")
+
+    def _fake_infercnv(adata_obj, **_kwargs):
+        adata_obj.layers["cnv"] = np.ones((adata_obj.n_obs, adata_obj.n_vars), dtype=float)
+        adata_obj.uns["cnv"] = {"ok": True}
+
+    fake_infercnvpy.tl = SimpleNamespace(infercnv=_fake_infercnv)
+    monkeypatch.setitem(__import__("sys").modules, "infercnvpy", fake_infercnvpy)
+    monkeypatch.setattr(cnv, "require", lambda *_a, **_k: None)
+    monkeypatch.setattr(cnv, "export_analysis_result", lambda *_a, **_k: [])
+    monkeypatch.setattr(cnv, "store_analysis_metadata", lambda *_a, **_k: None)
+
+    out = await cnv.infer_cnv(
+        "d13",
+        DummyCtx(adata),
+        CNVParameters(
+            method="infercnvpy",
+            reference_key="cell_type",
+            reference_categories=["A"],
+            cluster_cells=False,
+            dendrogram=False,
+        ),
+    )
+
+    assert out.cnv_score_key == "cnv"
+    assert out.n_chromosomes == 0
+
+
+def test_infer_cnv_numbat_dependency_error_when_r_package_unavailable(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    adata.obs["cell_type"] = ["A"] * 30 + ["B"] * 30
+
+    _install_fake_rpy2_stack(monkeypatch)
+    __import__("sys").modules["rpy2.robjects"].r = (
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("numbat missing"))
+    )
+
+    with pytest.raises(DependencyError, match="Numbat R package unavailable"):
+        cnv._infer_cnv_numbat(
+            "d14",
+            adata,
+            CNVParameters(
+                method="numbat",
+                reference_key="cell_type",
+                reference_categories=["A"],
+            ),
+            DummyCtx(adata),
+        )
+
+
+def test_infer_cnv_numbat_missing_geno_file_raises_processing_error(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    adata = minimal_spatial_adata.copy()
+    adata.obs["cell_type"] = ["A"] * 30 + ["B"] * 30
+    adata.uns["numbat_allele_data_raw"] = pd.DataFrame(
+        {
+            "cell": [adata.obs_names[0]],
+            "CHROM": ["chr1"],
+            "POS": [100],
+            "REF": ["A"],
+            "ALT": ["G"],
+            "AD": [3],
+            "DP": [10],
+        }
+    )
+
+    def _runner(env: dict):
+        out_dir = env["out_dir"]
+        cell_barcodes = list(env["cell_barcodes"])
+        clone_post = pd.DataFrame(
+            {
+                "cell": cell_barcodes,
+                "clone_opt": ["c1"] * len(cell_barcodes),
+                "p_cnv": [0.7] * len(cell_barcodes),
+                "compartment_opt": ["tumor"] * len(cell_barcodes),
+            }
+        )
+        clone_post.to_csv(f"{out_dir}/clone_post_2.tsv", sep="\t", index=False)
+        # Intentionally do not write geno_2.tsv
+
+    _install_fake_rpy2_stack_with_runner(monkeypatch, _runner)
+
+    def _mkdtemp(prefix, dir):
+        _ = prefix, dir
+        p = tmp_path / "numbat_out_geno_missing"
+        p.mkdir(parents=True, exist_ok=True)
+        return str(p)
+
+    monkeypatch.setattr(__import__("tempfile"), "mkdtemp", _mkdtemp)
+
+    with pytest.raises(ProcessingError, match="geno_2.tsv"):
+        cnv._infer_cnv_numbat(
+            "d15",
+            adata,
+            CNVParameters(
+                method="numbat",
+                reference_key="cell_type",
+                reference_categories=["A"],
+            ),
+            DummyCtx(adata),
+        )
+
+
+def test_infer_cnv_numbat_cell_mismatch_raises_processing_error(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    adata = minimal_spatial_adata.copy()
+    adata.obs["cell_type"] = ["A"] * 30 + ["B"] * 30
+    adata.uns["numbat_allele_data_raw"] = pd.DataFrame(
+        {
+            "cell": [adata.obs_names[0]],
+            "CHROM": ["chr1"],
+            "POS": [100],
+            "REF": ["A"],
+            "ALT": ["G"],
+            "AD": [3],
+            "DP": [10],
+        }
+    )
+
+    def _runner(env: dict):
+        out_dir = env["out_dir"]
+        cell_barcodes = list(env["cell_barcodes"])
+        clone_post = pd.DataFrame(
+            {
+                "cell": cell_barcodes,
+                "clone_opt": ["c1"] * len(cell_barcodes),
+                "p_cnv": [0.7] * len(cell_barcodes),
+                "compartment_opt": ["tumor"] * len(cell_barcodes),
+            }
+        )
+        clone_post.to_csv(f"{out_dir}/clone_post_2.tsv", sep="\t", index=False)
+
+        bad_cells = cell_barcodes[:-1] + ["UNKNOWN_CELL"]
+        geno = pd.DataFrame({"cell": bad_cells, "seg1": np.ones(len(bad_cells))})
+        geno.to_csv(f"{out_dir}/geno_2.tsv", sep="\t", index=False)
+
+    _install_fake_rpy2_stack_with_runner(monkeypatch, _runner)
+
+    def _mkdtemp(prefix, dir):
+        _ = prefix, dir
+        p = tmp_path / "numbat_out_bad_cells"
+        p.mkdir(parents=True, exist_ok=True)
+        return str(p)
+
+    monkeypatch.setattr(__import__("tempfile"), "mkdtemp", _mkdtemp)
+
+    with pytest.raises(ProcessingError, match="Mismatch between genotype cells"):
+        cnv._infer_cnv_numbat(
+            "d16",
+            adata,
+            CNVParameters(
+                method="numbat",
+                reference_key="cell_type",
+                reference_categories=["A"],
+            ),
+            DummyCtx(adata),
+        )
+
+
+def test_infer_cnv_numbat_cleanup_failure_is_swallowed(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    adata = minimal_spatial_adata.copy()
+    adata.obs["cell_type"] = ["A"] * 30 + ["B"] * 30
+    adata.uns["numbat_allele_data_raw"] = pd.DataFrame(
+        {
+            "cell": [adata.obs_names[0]],
+            "CHROM": ["chr1"],
+            "POS": [100],
+            "REF": ["A"],
+            "ALT": ["G"],
+            "AD": [3],
+            "DP": [10],
+        }
+    )
+
+    def _runner(_env: dict):
+        return None  # Missing outputs -> ProcessingError path
+
+    _install_fake_rpy2_stack_with_runner(monkeypatch, _runner)
+
+    def _mkdtemp(prefix, dir):
+        _ = prefix, dir
+        p = tmp_path / "numbat_out_cleanup_fail"
+        p.mkdir(parents=True, exist_ok=True)
+        return str(p)
+
+    monkeypatch.setattr(__import__("tempfile"), "mkdtemp", _mkdtemp)
+    monkeypatch.setattr(__import__("shutil"), "rmtree", lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("rm fail")))
+
+    with pytest.raises(ProcessingError, match="Numbat output file not found"):
+        cnv._infer_cnv_numbat(
+            "d17",
             adata,
             CNVParameters(
                 method="numbat",

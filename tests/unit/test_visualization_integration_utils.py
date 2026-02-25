@@ -218,3 +218,22 @@ async def test_batch_highlight_creates_grid_and_hides_unused_axes(minimal_spatia
     assert fig._suptitle.get_text() == "Highlight panel"
     assert any("per-batch highlight visualization" in m for m in ctx.infos)
     fig.clf()
+
+
+@pytest.mark.asyncio
+async def test_batch_highlight_respects_explicit_figure_size(minimal_spatial_adata):
+    adata = _with_umap_and_batch(minimal_spatial_adata, n_batches=2, categorical=True)
+    fig = await viz_integ._create_batch_highlight(
+        adata,
+        VisualizationParameters(
+            plot_type="integration",
+            subtype="highlight",
+            batch_key="batch",
+            figure_size=[9, 4],
+        ),
+        context=None,
+    )
+    width, height = fig.get_size_inches()
+    assert width == pytest.approx(9.0)
+    assert height == pytest.approx(4.0)
+    fig.clf()

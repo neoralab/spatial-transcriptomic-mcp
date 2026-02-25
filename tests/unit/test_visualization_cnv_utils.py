@@ -125,6 +125,62 @@ async def test_spatial_cnv_numeric_feature_sets_rdbu(minimal_spatial_adata, monk
 
 
 @pytest.mark.asyncio
+async def test_spatial_cnv_feature_list_uses_first_entry(minimal_spatial_adata, monkeypatch):
+    adata = minimal_spatial_adata.copy()
+    adata.obs["cnv_score"] = np.linspace(0.0, 1.0, adata.n_obs)
+    adata.obs["numbat_p_cnv"] = np.linspace(1.0, 2.0, adata.n_obs)
+
+    monkeypatch.setattr(viz_cnv, "require_spatial_coords", lambda _a: _a.obsm["spatial"])
+    fig, ax = plt.subplots()
+    monkeypatch.setattr(viz_cnv, "create_figure_from_params", lambda *_a, **_k: (fig, [ax]))
+    captured: dict[str, str] = {}
+    monkeypatch.setattr(
+        viz_cnv,
+        "plot_spatial_feature",
+        lambda _adata, _ax, feature, params: captured.__setitem__("feature", feature),
+    )
+
+    await viz_cnv._create_spatial_cnv(
+        adata,
+        VisualizationParameters(
+            plot_type="cnv",
+            subtype="spatial",
+            feature=["cnv_score", "numbat_p_cnv"],
+            colormap="",
+        ),
+        context=DummyCtx(),
+    )
+    assert captured["feature"] == "cnv_score"
+    fig.clf()
+
+
+@pytest.mark.asyncio
+async def test_spatial_cnv_auto_detects_numbat_probability(minimal_spatial_adata, monkeypatch):
+    adata = minimal_spatial_adata.copy()
+    adata.obs["numbat_p_cnv"] = np.linspace(0.0, 1.0, adata.n_obs)
+
+    monkeypatch.setattr(viz_cnv, "require_spatial_coords", lambda _a: _a.obsm["spatial"])
+    fig, ax = plt.subplots()
+    monkeypatch.setattr(viz_cnv, "create_figure_from_params", lambda *_a, **_k: (fig, [ax]))
+    captured: dict[str, str] = {}
+    monkeypatch.setattr(
+        viz_cnv,
+        "plot_spatial_feature",
+        lambda _adata, _ax, feature, params: captured.__setitem__("feature", feature),
+    )
+    ctx = DummyCtx()
+
+    await viz_cnv._create_spatial_cnv(
+        adata,
+        VisualizationParameters(plot_type="cnv", subtype="spatial", colormap=""),
+        context=ctx,
+    )
+    assert captured["feature"] == "numbat_p_cnv"
+    assert any("using 'numbat_p_cnv'" in msg for msg in ctx.infos)
+    fig.clf()
+
+
+@pytest.mark.asyncio
 async def test_cnv_heatmap_requires_cnv_data(minimal_spatial_adata):
     ctx = DummyCtx()
     with pytest.raises(DataNotFoundError, match="CNV data not found in obsm"):
