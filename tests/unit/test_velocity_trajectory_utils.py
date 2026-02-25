@@ -693,6 +693,18 @@ async def test_prepare_velovi_data_warns_and_continues_on_scv_failures(
     assert "moments computation warning" in ctx.messages[1]
 
 
+@pytest.mark.asyncio
+async def test_prepare_velovi_data_requires_spliced_and_unspliced_layers(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata.copy()
+    adata.layers.clear()
+    monkeypatch.setitem(__import__("sys").modules, "scvelo", ModuleType("scvelo"))
+
+    with pytest.raises(DataNotFoundError, match="Missing required 'spliced' and 'unspliced' layers"):
+        await vel._prepare_velovi_data(adata, ctx=None)
+
+
 def test_validate_velovi_data_rejects_non_2d_layers():
     adata = SimpleNamespace(layers={"Ms": np.ones(5), "Mu": np.ones(5)})
     with pytest.raises(DataError, match="Expected 2D arrays"):
@@ -754,6 +766,124 @@ async def test_analyze_velocity_with_velovi_values_inputs_and_scalar_scaling(
     assert out["velocity_computed"] is True
     assert out["latent_time_shape"] == (adata.n_obs,)
     assert out["velocity_shape"] == (adata.n_obs, adata.n_vars)
+    assert "velocity_velovi_norm" in adata.obs
+
+
+@pytest.mark.asyncio
+async def test_analyze_velocity_with_velovi_2d_latent_time_uses_series_scaling_to_numpy(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata[:, :3].copy()
+    adata.layers["spliced"] = np.ones((adata.n_obs, adata.n_vars), dtype=float)
+    adata.layers["unspliced"] = np.ones((adata.n_obs, adata.n_vars), dtype=float)
+    adata_prepared = adata.copy()
+    adata_prepared.layers["Ms"] = np.ones((adata.n_obs, adata.n_vars), dtype=float)
+    adata_prepared.layers["Mu"] = np.ones((adata.n_obs, adata.n_vars), dtype=float)
+
+    class _FakeVELOVI:
+        @staticmethod
+        def setup_anndata(*_a, **_k):
+            return None
+
+        def __init__(self, *_a, **_k):
+            return None
+
+        def train(self, *_a, **_k):
+            return None
+
+        def get_latent_time(self, n_samples: int):
+            assert n_samples == 25
+            return np.full((adata.n_obs, adata.n_vars), 2.0, dtype=float)
+
+        def get_velocity(self, n_samples: int, velo_statistic: str):
+            assert n_samples == 25
+            assert velo_statistic == "mean"
+            return np.ones((adata.n_obs, adata.n_vars), dtype=float)
+
+        def get_latent_representation(self):
+            return np.ones((adata.n_obs, 2), dtype=float)
+
+    real_np_max = vel.np.max
+
+    def _fake_max(arr, axis=None):
+        if axis == 0 and getattr(arr, "ndim", 0) > 1:
+            return pd.Series(np.full(arr.shape[1], 2.0, dtype=float))
+        return real_np_max(arr, axis=axis)
+
+    fake_scvi_external = ModuleType("scvi.external")
+    fake_scvi_external.VELOVI = _FakeVELOVI
+    monkeypatch.setitem(__import__("sys").modules, "scvi.external", fake_scvi_external)
+    monkeypatch.setattr(vel, "require", lambda *_a, **_k: None)
+    monkeypatch.setattr(vel, "get_accelerator", lambda prefer_gpu=False: "cpu")
+    monkeypatch.setattr(vel, "store_velovi_essential_data", lambda *_a, **_k: None)
+    monkeypatch.setattr(vel.np, "max", _fake_max)
+
+    async def _fake_prepare(*_a, **_k):
+        return adata_prepared
+
+    monkeypatch.setattr(vel, "_prepare_velovi_data", _fake_prepare)
+
+    out = await vel.analyze_velocity_with_velovi(adata, n_epochs=1, use_gpu=False, ctx=None)
+    assert out["velocity_computed"] is True
+    assert out["velocity_shape"] == (adata.n_obs, adata.n_vars)
+
+
+@pytest.mark.asyncio
+async def test_analyze_velocity_with_velovi_uses_scaling_fallback_branch_for_2d_scaling(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    adata = minimal_spatial_adata[:, :2].copy()
+    adata.layers["spliced"] = np.ones((adata.n_obs, adata.n_vars), dtype=float)
+    adata.layers["unspliced"] = np.ones((adata.n_obs, adata.n_vars), dtype=float)
+    adata_prepared = adata.copy()
+    adata_prepared.layers["Ms"] = np.ones((adata.n_obs, adata.n_vars), dtype=float)
+    adata_prepared.layers["Mu"] = np.ones((adata.n_obs, adata.n_vars), dtype=float)
+
+    class _FakeVELOVI:
+        @staticmethod
+        def setup_anndata(*_a, **_k):
+            return None
+
+        def __init__(self, *_a, **_k):
+            return None
+
+        def train(self, *_a, **_k):
+            return None
+
+        def get_latent_time(self, n_samples: int):
+            assert n_samples == 25
+            return np.full((adata.n_obs, adata.n_vars), 4.0, dtype=float)
+
+        def get_velocity(self, n_samples: int, velo_statistic: str):
+            assert n_samples == 25
+            assert velo_statistic == "mean"
+            return np.ones((adata.n_obs, adata.n_vars), dtype=float)
+
+        def get_latent_representation(self):
+            return np.ones((adata.n_obs, 2), dtype=float)
+
+    real_np_max = vel.np.max
+
+    def _fake_max(arr, axis=None):
+        if axis == 0 and getattr(arr, "ndim", 0) > 1:
+            return np.full((1, arr.shape[1]), 2.0, dtype=float)
+        return real_np_max(arr, axis=axis)
+
+    fake_scvi_external = ModuleType("scvi.external")
+    fake_scvi_external.VELOVI = _FakeVELOVI
+    monkeypatch.setitem(__import__("sys").modules, "scvi.external", fake_scvi_external)
+    monkeypatch.setattr(vel, "require", lambda *_a, **_k: None)
+    monkeypatch.setattr(vel, "get_accelerator", lambda prefer_gpu=False: "cpu")
+    monkeypatch.setattr(vel, "store_velovi_essential_data", lambda *_a, **_k: None)
+    monkeypatch.setattr(vel.np, "max", _fake_max)
+
+    async def _fake_prepare(*_a, **_k):
+        return adata_prepared
+
+    monkeypatch.setattr(vel, "_prepare_velovi_data", _fake_prepare)
+
+    out = await vel.analyze_velocity_with_velovi(adata, n_epochs=1, use_gpu=False, ctx=None)
+    assert out["velocity_computed"] is True
     assert "velocity_velovi_norm" in adata.obs
 
 
@@ -835,11 +965,11 @@ async def test_analyze_rna_velocity_velovi_false_result_raises_processing(
     monkeypatch.setattr(vel, "require", lambda *_a, **_k: None)
     monkeypatch.setitem(__import__("sys").modules, "scvelo", ModuleType("scvelo"))
     monkeypatch.setattr(vel, "validate_adata", lambda *_a, **_k: None)
-    monkeypatch.setattr(
-        vel,
-        "analyze_velocity_with_velovi",
-        lambda *_a, **_k: {"velocity_computed": False},
-    )
+
+    async def _fake_velovi_false(*_a, **_k):
+        return {"velocity_computed": False}
+
+    monkeypatch.setattr(vel, "analyze_velocity_with_velovi", _fake_velovi_false)
 
     with pytest.raises(ProcessingError, match="VELOVI velocity analysis failed"):
         await vel.analyze_rna_velocity(
