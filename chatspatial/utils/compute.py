@@ -423,6 +423,16 @@ def gmm_clustering(
     # Fit and predict
     labels = gmm.fit_predict(data)
 
+    if not gmm.converged_:
+        import warnings
+
+        warnings.warn(
+            f"GMM did not converge after {gmm.n_iter_} iterations. "
+            "Results may be unreliable. Consider increasing max_iter.",
+            UserWarning,
+            stacklevel=2,
+        )
+
     # Convert to 1-indexed labels (mclust compatibility)
     # mclust returns labels starting from 1, sklearn from 0
     labels = labels + 1

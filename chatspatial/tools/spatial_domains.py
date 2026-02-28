@@ -8,12 +8,15 @@ algorithms (Leiden, Louvain) adapted for spatial data. The primary entry point i
 function, which handles data preparation and dispatches to the selected method.
 """
 
+import logging
 from collections import Counter
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
 import scanpy as sc
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ..spatial_mcp_adapter import ToolContext
@@ -90,6 +93,12 @@ async def identify_spatial_domains(
 
         # Step 1: Determine gene subset (no copy yet)
         use_hvg = params.use_highly_variable and "highly_variable" in adata.var.columns
+        if params.use_highly_variable and "highly_variable" not in adata.var.columns:
+            logger.warning(
+                "use_highly_variable=True but 'highly_variable' "
+                "column not found in adata.var. "
+                "Using all genes instead."
+            )
         hvg_mask = adata.var["highly_variable"] if use_hvg else None
 
         # Step 2: Check data quality on original adata (read-only)

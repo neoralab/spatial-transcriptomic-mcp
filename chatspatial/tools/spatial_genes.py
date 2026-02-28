@@ -72,6 +72,14 @@ def _calculate_sparse_gene_stats(X) -> tuple[np.ndarray, np.ndarray]:
         gene_totals = np.asarray(X.sum(axis=0)).flatten()
         n_expressed = np.asarray((X > 0).sum(axis=0)).flatten()
 
+    # Guard against NaN/Inf values from degenerate inputs
+    gene_totals = np.nan_to_num(
+        gene_totals, nan=0.0, posinf=0.0, neginf=0.0
+    )
+    n_expressed = np.nan_to_num(
+        n_expressed, nan=0.0, posinf=0.0, neginf=0.0
+    )
+
     return gene_totals, n_expressed
 
 

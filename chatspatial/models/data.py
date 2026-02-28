@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing_extensions import Self
 
 # =============================================================================
@@ -1444,6 +1444,22 @@ class SpatialVariableGenesParameters(BaseModel):
         # Requires preprocessing with HVG detection first; set to False to test all genes (not recommended)
     )
     warn_housekeeping: bool = True  # Warn if >30% of top genes are housekeeping genes
+
+    @field_validator("n_top_genes")
+    @classmethod
+    def validate_n_top_genes(cls, v: int | None) -> int | None:
+        if v is not None and v <= 0:
+            raise ValueError("n_top_genes must be positive")
+        return v
+
+    @field_validator("sparkx_percentage")
+    @classmethod
+    def validate_sparkx_percentage(cls, v: float) -> float:
+        if not (0 < v < 1):
+            raise ValueError(
+                "sparkx_percentage must be between 0 and 1"
+            )
+        return v
 
 
 class CellCommunicationParameters(BaseModel):
