@@ -131,12 +131,18 @@ Find spatially variable genes and create a heatmap
 
 ## Citation
 
+If you use ChatSpatial in your research, please cite:
+
 ```bibtex
-@software{chatspatial2025,
-  title={ChatSpatial: Agentic Workflow for Spatial Transcriptomics},
-  author={Chen Yang and Xianyang Zhang and Jun Chen},
-  year={2025},
-  url={https://github.com/cafferychen777/ChatSpatial}
+@article{Yang2026.02.26.708361,
+  author = {Yang, Chen and Zhang, Xianyang and Chen, Jun},
+  title = {ChatSpatial: Schema-Enforced Agentic Orchestration for Reproducible and Cross-Platform Spatial Transcriptomics},
+  elocation-id = {2026.02.26.708361},
+  year = {2026},
+  doi = {10.64898/2026.02.26.708361},
+  publisher = {Cold Spring Harbor Laboratory},
+  URL = {https://www.biorxiv.org/content/early/2026/03/01/2026.02.26.708361},
+  journal = {bioRxiv}
 }
 ```
 
