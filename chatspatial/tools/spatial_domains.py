@@ -38,6 +38,7 @@ from ..utils.exceptions import (
     ParameterError,
     ProcessingError,
 )
+from ..utils.mcp_utils import suppress_output
 from ..utils.results_export import export_analysis_result
 
 
@@ -394,23 +395,25 @@ async def _identify_domains_spagcn(
             # Run SpaGCN in a thread pool to avoid blocking
             loop = asyncio.get_event_loop()
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = loop.run_in_executor(
-                    executor,
-                    lambda: detect_spatial_domains_ez_mode(
-                        adata,  # Pass the adata parameter (which is actually adata_subset)
-                        img,
-                        x_array,
-                        y_array,
-                        x_pixel,
-                        y_pixel,
-                        n_clusters=params.n_domains,
-                        histology=params.spagcn_use_histology,
-                        s=params.spagcn_s,
-                        b=params.spagcn_b,
-                        p=params.spagcn_p,
-                        r_seed=params.spagcn_random_seed,
-                    ),
-                )
+
+                def _run_spagcn():
+                    with suppress_output():
+                        return detect_spatial_domains_ez_mode(
+                            adata,
+                            img,
+                            x_array,
+                            y_array,
+                            x_pixel,
+                            y_pixel,
+                            n_clusters=params.n_domains,
+                            histology=params.spagcn_use_histology,
+                            s=params.spagcn_s,
+                            b=params.spagcn_b,
+                            p=params.spagcn_p,
+                            r_seed=params.spagcn_random_seed,
+                        )
+
+                future = loop.run_in_executor(executor, _run_spagcn)
 
                 # Simple, predictable timeout
                 timeout_seconds = (
@@ -663,11 +666,13 @@ async def _identify_domains_stagate(
         # Calculate spatial graph
         # STAGATE_pyG uses smaller default radius (50 instead of 150)
         rad_cutoff = params.stagate_rad_cutoff or 50
-        STAGATE_pyG.Cal_Spatial_Net(adata_stagate, rad_cutoff=rad_cutoff)
+        with suppress_output():
+            STAGATE_pyG.Cal_Spatial_Net(adata_stagate, rad_cutoff=rad_cutoff)
 
         # Optional: Display network statistics
         try:
-            STAGATE_pyG.Stats_Spatial_Net(adata_stagate)
+            with suppress_output():
+                STAGATE_pyG.Stats_Spatial_Net(adata_stagate)
         except Exception as exc:
             ctx.debug(f"STAGATE Stats_Spatial_Net skipped: {exc}")
 
@@ -684,11 +689,12 @@ async def _identify_domains_stagate(
         with concurrent.futures.ThreadPoolExecutor() as executor:
             timeout_seconds = params.timeout or 600
 
+            def _train_stagate():
+                with suppress_output():
+                    return STAGATE_pyG.train_STAGATE(adata_stagate, device=device)
+
             adata_stagate = await asyncio.wait_for(
-                loop.run_in_executor(
-                    executor,
-                    lambda: STAGATE_pyG.train_STAGATE(adata_stagate, device=device),
-                ),
+                loop.run_in_executor(executor, _train_stagate),
                 timeout=timeout_seconds,
             )
 
@@ -787,8 +793,12 @@ async def _identify_domains_graphst(
             # Set timeout
             timeout_seconds = params.timeout or 600
 
+            def _train_graphst():
+                with suppress_output():
+                    return model.train()
+
             adata_graphst = await asyncio.wait_for(
-                loop.run_in_executor(executor, lambda: model.train()),
+                loop.run_in_executor(executor, _train_graphst),
                 timeout=timeout_seconds,
             )
 
@@ -804,71 +814,76 @@ async def _identify_domains_graphst(
         from ..utils.compute import gmm_clustering
 
         def run_clustering_optimized():
-            # PCA on embeddings (same as GraphST)
-            pca = PCA(n_components=20, random_state=42)
-            embedding = pca.fit_transform(adata_graphst.obsm["emb"])
-            adata_graphst.obsm["emb_pca"] = embedding
+            with suppress_output():
+                # PCA on embeddings (same as GraphST)
+                pca = PCA(n_components=20, random_state=42)
+                embedding = pca.fit_transform(adata_graphst.obsm["emb"])
+                adata_graphst.obsm["emb_pca"] = embedding
 
-            if params.graphst_clustering_method == "mclust":
-                # Use sklearn GMM (equivalent to mclust EEE, eliminates R dependency)
-                gmm_labels = gmm_clustering(
-                    data=embedding,
-                    n_clusters=n_clusters,
-                    covariance_type="tied",  # Equivalent to mclust EEE model
-                    random_state=params.graphst_random_seed,
-                )
-                adata_graphst.obs["domain"] = pd.Categorical(gmm_labels)
-
-                # Apply refinement if requested
-                if params.graphst_refinement:
-                    from GraphST.utils import refine_label
-
-                    new_type = refine_label(
-                        adata_graphst, radius=params.graphst_radius, key="domain"
+                if params.graphst_clustering_method == "mclust":
+                    # Use sklearn GMM (equivalent to mclust EEE, eliminates R dependency)
+                    gmm_labels = gmm_clustering(
+                        data=embedding,
+                        n_clusters=n_clusters,
+                        covariance_type="tied",  # Equivalent to mclust EEE model
+                        random_state=params.graphst_random_seed,
                     )
-                    adata_graphst.obs["domain"] = new_type
-            else:
-                # BINARY SEARCH for resolution (replaces GraphST's linear search)
-                # This reduces iterations from 290 to ~10-15
-                sc.pp.neighbors(adata_graphst, n_neighbors=50, use_rep="emb_pca")
+                    adata_graphst.obs["domain"] = pd.Categorical(gmm_labels)
 
-                low, high = 0.1, 3.0
-                best_res, best_diff = 1.0, float("inf")
-                max_iterations = 20  # Binary search converges quickly
+                    # Apply refinement if requested
+                    if params.graphst_refinement:
+                        from GraphST.utils import refine_label
 
-                for _ in range(max_iterations):
-                    mid = (low + high) / 2
-                    sc.tl.leiden(adata_graphst, resolution=mid, random_state=0)
-                    current_clusters = len(adata_graphst.obs["leiden"].unique())
+                        new_type = refine_label(
+                            adata_graphst,
+                            radius=params.graphst_radius,
+                            key="domain",
+                        )
+                        adata_graphst.obs["domain"] = new_type
+                else:
+                    # BINARY SEARCH for resolution (replaces GraphST's linear search)
+                    # This reduces iterations from 290 to ~10-15
+                    sc.pp.neighbors(adata_graphst, n_neighbors=50, use_rep="emb_pca")
 
-                    diff = abs(current_clusters - n_clusters)
-                    if diff < best_diff:
-                        best_diff = diff
-                        best_res = mid
+                    low, high = 0.1, 3.0
+                    best_res, best_diff = 1.0, float("inf")
+                    max_iterations = 20  # Binary search converges quickly
 
-                    if current_clusters == n_clusters:
-                        break
-                    elif current_clusters > n_clusters:
-                        high = mid
-                    else:
-                        low = mid
+                    for _ in range(max_iterations):
+                        mid = (low + high) / 2
+                        sc.tl.leiden(adata_graphst, resolution=mid, random_state=0)
+                        current_clusters = len(adata_graphst.obs["leiden"].unique())
 
-                    # Early termination if we're close enough
-                    if high - low < 0.01:
-                        break
+                        diff = abs(current_clusters - n_clusters)
+                        if diff < best_diff:
+                            best_diff = diff
+                            best_res = mid
 
-                # Final clustering with best resolution
-                sc.tl.leiden(adata_graphst, resolution=best_res, random_state=0)
-                adata_graphst.obs["domain"] = adata_graphst.obs["leiden"]
+                        if current_clusters == n_clusters:
+                            break
+                        elif current_clusters > n_clusters:
+                            high = mid
+                        else:
+                            low = mid
 
-                # Apply refinement if requested
-                if params.graphst_refinement:
-                    from GraphST.utils import refine_label
+                        # Early termination if we're close enough
+                        if high - low < 0.01:
+                            break
 
-                    new_type = refine_label(
-                        adata_graphst, radius=params.graphst_radius, key="domain"
-                    )
-                    adata_graphst.obs["domain"] = new_type
+                    # Final clustering with best resolution
+                    sc.tl.leiden(adata_graphst, resolution=best_res, random_state=0)
+                    adata_graphst.obs["domain"] = adata_graphst.obs["leiden"]
+
+                    # Apply refinement if requested
+                    if params.graphst_refinement:
+                        from GraphST.utils import refine_label
+
+                        new_type = refine_label(
+                            adata_graphst,
+                            radius=params.graphst_radius,
+                            key="domain",
+                        )
+                        adata_graphst.obs["domain"] = new_type
 
         # Run clustering in thread pool
         with concurrent.futures.ThreadPoolExecutor() as executor:
@@ -953,15 +968,16 @@ async def _identify_domains_banksy(
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
             # Step 1: Initialize BANKSY (compute spatial graphs)
             def init_banksy():
-                return initialize_banksy(
-                    adata_banksy,
-                    coord_keys=coord_keys,
-                    num_neighbours=params.banksy_num_neighbours,
-                    max_m=params.banksy_max_m,
-                    plt_edge_hist=False,
-                    plt_nbr_weights=False,
-                    plt_theta=False,
-                )
+                with suppress_output():
+                    return initialize_banksy(
+                        adata_banksy,
+                        coord_keys=coord_keys,
+                        num_neighbours=params.banksy_num_neighbours,
+                        max_m=params.banksy_max_m,
+                        plt_edge_hist=False,
+                        plt_nbr_weights=False,
+                        plt_theta=False,
+                    )
 
             banksy_dict = await asyncio.wait_for(
                 loop.run_in_executor(executor, init_banksy),
@@ -970,13 +986,14 @@ async def _identify_domains_banksy(
 
             # Step 2: Generate BANKSY matrix (feature augmentation)
             def gen_matrix():
-                return generate_banksy_matrix(
-                    adata_banksy,
-                    banksy_dict,
-                    lambda_list=[params.banksy_lambda],
-                    max_m=params.banksy_max_m,
-                    verbose=False,
-                )
+                with suppress_output():
+                    return generate_banksy_matrix(
+                        adata_banksy,
+                        banksy_dict,
+                        lambda_list=[params.banksy_lambda],
+                        max_m=params.banksy_max_m,
+                        verbose=False,
+                    )
 
             _, banksy_matrix = await asyncio.wait_for(
                 loop.run_in_executor(executor, gen_matrix),
@@ -985,18 +1002,19 @@ async def _identify_domains_banksy(
 
             # Step 3: PCA on BANKSY matrix
             def run_clustering():
-                sc.pp.pca(banksy_matrix, n_comps=params.banksy_pca_dims)
-                sc.pp.neighbors(
-                    banksy_matrix,
-                    use_rep="X_pca",
-                    n_neighbors=params.banksy_num_neighbours,
-                )
-                sc.tl.leiden(
-                    banksy_matrix,
-                    resolution=params.banksy_cluster_resolution,
-                    key_added="banksy_cluster",
-                )
-                return banksy_matrix
+                with suppress_output():
+                    sc.pp.pca(banksy_matrix, n_comps=params.banksy_pca_dims)
+                    sc.pp.neighbors(
+                        banksy_matrix,
+                        use_rep="X_pca",
+                        n_neighbors=params.banksy_num_neighbours,
+                    )
+                    sc.tl.leiden(
+                        banksy_matrix,
+                        resolution=params.banksy_cluster_resolution,
+                        key_added="banksy_cluster",
+                    )
+                    return banksy_matrix
 
             banksy_matrix = await asyncio.wait_for(
                 loop.run_in_executor(executor, run_clustering),
