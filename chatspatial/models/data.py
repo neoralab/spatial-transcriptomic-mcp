@@ -139,8 +139,8 @@ class PreprocessingParameters(BaseModel):
 
     # Normalization and scaling parameters
     normalization: Literal["log", "sct", "pearson_residuals", "none", "scvi"] = Field(
-        default="log",
-        description="Normalization method. 'sct' requires R. 'scvi' includes batch modeling if batch_key exists.",
+        default="pearson_residuals",
+        description="Normalization method. 'pearson_residuals' (default, recommended): analytic Pearson residuals for variance stabilization (Lause et al. 2021), pure Python, no external dependencies. 'log': traditional log1p normalization. 'sct': SCTransform via R (requires R + sctransform package). 'scvi': scVI-based normalization, includes batch modeling if batch_key exists.",
     )
     scale: bool = Field(
         default=False,
