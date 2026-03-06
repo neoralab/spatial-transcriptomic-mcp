@@ -202,11 +202,16 @@ def test_ensure_enrichmap_compatibility_adds_minimum_metadata(minimal_spatial_ad
     if "library_id" in adata.obs.columns:
         del adata.obs["library_id"]
 
-    viz_enrich._ensure_enrichmap_compatibility(adata)
+    result = viz_enrich._ensure_enrichmap_compatibility(adata)
 
-    assert "library_id" in adata.obs.columns
-    assert "spatial" in adata.uns
-    assert "sample_1" in adata.uns["spatial"]
+    # Original adata must NOT be mutated
+    assert "library_id" not in adata.obs.columns
+    assert "spatial" not in adata.uns
+
+    # Returned copy must have the metadata
+    assert "library_id" in result.obs.columns
+    assert "spatial" in result.uns
+    assert "sample_1" in result.uns["spatial"]
 
 
 def test_get_score_columns_prefers_metadata(minimal_spatial_adata):

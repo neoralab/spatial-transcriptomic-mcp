@@ -184,11 +184,15 @@ async def _create_trajectory_pseudotime_plot(
     if basis == "spatial":
         ax1.invert_yaxis()
 
-    # Add consistent colorbar for panel 1
+    # Add consistent colorbar for panel 1 (use actual data range)
     if params.show_colorbar:
+        pt_vals = adata.obs[pseudotime_key].dropna()
+        vmin, vmax = (
+            (float(pt_vals.min()), float(pt_vals.max())) if len(pt_vals) else (0, 1)
+        )
         divider1 = make_axes_locatable(ax1)
         cax1 = divider1.append_axes("right", size="4%", pad=0.05)
-        sm1 = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(0, 1))
+        sm1 = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin, vmax))
         sm1.set_array([])
         fig.colorbar(sm1, cax=cax1)
 
@@ -214,11 +218,11 @@ async def _create_trajectory_pseudotime_plot(
         if basis == "spatial":
             ax2.invert_yaxis()
 
-        # Add consistent colorbar for panel 2
+        # Add consistent colorbar for panel 2 (same range as panel 1)
         if params.show_colorbar:
             divider2 = make_axes_locatable(ax2)
             cax2 = divider2.append_axes("right", size="4%", pad=0.05)
-            sm2 = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(0, 1))
+            sm2 = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin, vmax))
             sm2.set_array([])
             fig.colorbar(sm2, cax=cax2)
 

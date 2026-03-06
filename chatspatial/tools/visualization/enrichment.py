@@ -36,15 +36,18 @@ from .core import (
 # =============================================================================
 
 
-def _ensure_enrichmap_compatibility(adata: "ad.AnnData") -> None:
-    """Ensure data has required metadata structure for EnrichMap visualization.
+def _ensure_enrichmap_compatibility(adata: "ad.AnnData") -> "ad.AnnData":
+    """Return a shallow copy of *adata* with EnrichMap-required metadata.
 
     EnrichMap and squidpy require:
     1. adata.obs['library_id'] - sample identifier column
     2. adata.uns['spatial'] - spatial metadata dictionary
 
-    This function adds minimal metadata for single-sample data without these.
+    Returns a shallow copy so the original AnnData is never mutated.
     """
+    # Shallow copy: shares .X / .layers matrices but gets independent .obs/.uns
+    adata = adata.copy()
+
     if "library_id" not in adata.obs.columns:
         adata.obs["library_id"] = "sample_1"
 
@@ -61,6 +64,8 @@ def _ensure_enrichmap_compatibility(adata: "ad.AnnData") -> None:
                     "tissue_lowres_scalef": 1.0,
                 },
             }
+
+    return adata
 
 
 def _get_score_columns(adata: "ad.AnnData") -> list[str]:
@@ -355,8 +360,18 @@ def _create_enrichmap_spatial(
             "Install with: pip install enrichmap"
         ) from e
 
-    _ensure_enrichmap_compatibility(adata)
-    library_id = adata.obs["library_id"].unique()[0]
+    adata = _ensure_enrichmap_compatibility(adata)
+    library_ids = adata.obs["library_id"].unique()
+    if len(library_ids) > 1:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Multiple library_ids found (%s). Using first: '%s'. "
+            "For multi-sample EnrichMap, run per-sample separately.",
+            list(library_ids),
+            library_ids[0],
+        )
+    library_id = library_ids[0]
 
     try:
         if params.subtype == "spatial_cross_correlation":
