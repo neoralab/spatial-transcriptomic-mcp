@@ -241,7 +241,7 @@ async def _create_cellrank_circular_projection(
     import cellrank as cr
 
     # Check for CellRank results
-    fate_key_candidates = ["lineages_fwd", "to_terminal_states"]
+    fate_key_candidates = ["lineages_fwd", "to_terminal_states", "fate_probabilities"]
     fate_key = None
     for key in fate_key_candidates:
         if key in adata.obsm:
@@ -298,7 +298,7 @@ async def _create_cellrank_fate_map(
     import cellrank as cr
 
     # Check for CellRank results
-    fate_key_candidates = ["lineages_fwd", "to_terminal_states"]
+    fate_key_candidates = ["lineages_fwd", "to_terminal_states", "fate_probabilities"]
     fate_key = None
     for key in fate_key_candidates:
         if key in adata.obsm:
@@ -366,7 +366,7 @@ async def _create_cellrank_gene_trends(
     from ..trajectory import prepare_gam_model_for_visualization
 
     # Check for fate probabilities
-    fate_key_candidates = ["lineages_fwd", "to_terminal_states"]
+    fate_key_candidates = ["lineages_fwd", "to_terminal_states", "fate_probabilities"]
     fate_key = None
     for key in fate_key_candidates:
         if key in adata.obsm:
@@ -380,7 +380,12 @@ async def _create_cellrank_gene_trends(
 
     # Find time key
     time_key = None
-    time_candidates = ["latent_time", "palantir_pseudotime", "dpt_pseudotime"]
+    time_candidates = [
+        "latent_time",
+        "palantir_pseudotime",
+        "dpt_pseudotime",
+        "pseudotime",
+    ]
     for key in time_candidates:
         if key in adata.obs.columns:
             time_key = key
@@ -462,7 +467,7 @@ async def _create_cellrank_fate_heatmap(
     from ..trajectory import prepare_gam_model_for_visualization
 
     # Check for fate probabilities
-    fate_key_candidates = ["lineages_fwd", "to_terminal_states"]
+    fate_key_candidates = ["lineages_fwd", "to_terminal_states", "fate_probabilities"]
     fate_key = None
     for key in fate_key_candidates:
         if key in adata.obsm:
@@ -476,7 +481,12 @@ async def _create_cellrank_fate_heatmap(
 
     # Find time key
     time_key = None
-    time_candidates = ["latent_time", "palantir_pseudotime", "dpt_pseudotime"]
+    time_candidates = [
+        "latent_time",
+        "palantir_pseudotime",
+        "dpt_pseudotime",
+        "pseudotime",
+    ]
     for key in time_candidates:
         if key in adata.obs.columns:
             time_key = key

@@ -210,9 +210,20 @@ def infer_spatial_trajectory_cellrank(
             try:
                 g.compute_fate_probabilities()
                 absorption_probs = g.fate_probabilities
-                terminal_states = list(g.terminal_states.cat.categories)
-                root_state = terminal_states[0]
-                pseudotime = 1 - absorption_probs[root_state].X.flatten()
+
+                # Derive pseudotime from fate probability entropy:
+                # high entropy = multipotent/undifferentiated = early
+                # low entropy = committed to one fate = late
+                fate_matrix = np.asarray(absorption_probs)
+                fate_matrix = np.clip(fate_matrix, 1e-10, None)  # avoid log(0)
+                entropy = -np.sum(fate_matrix * np.log(fate_matrix), axis=1)
+                # Normalize to [0, 1]: max entropy = earliest, 0 entropy = latest
+                max_entropy = entropy.max()
+                pseudotime = (
+                    1 - entropy / max_entropy
+                    if max_entropy > 0
+                    else np.zeros_like(entropy)
+                )
 
                 adata_for_cellrank.obs["pseudotime"] = pseudotime
                 adata_for_cellrank.obsm["fate_probabilities"] = absorption_probs
@@ -347,11 +358,10 @@ def compute_dpt_trajectory(
     else:
         adata.uns["iroot"] = 0
 
-    if "dpt_pseudotime" not in adata.obs:
-        try:
-            sc.tl.dpt(adata)
-        except Exception as e:
-            raise ProcessingError(f"DPT computation failed: {e}") from e
+    try:
+        sc.tl.dpt(adata)
+    except Exception as e:
+        raise ProcessingError(f"DPT computation failed: {e}") from e
 
     if "dpt_pseudotime" not in adata.obs.columns:
         raise ProcessingError("DPT computation did not create 'dpt_pseudotime' column")
