@@ -523,9 +523,15 @@ async def _create_getis_ord_visualization(
             z_scores = adata.obs[z_key].values
 
             # Read analysis-time significance settings from stored metadata
-            getis_meta = adata.uns.get("getis_ord", {}).get("parameters", {})
-            sig_alpha = getis_meta.get("alpha", 0.05)
-            correction = getis_meta.get("correction", "none")
+            sig_alpha = get_analysis_parameter(
+                adata, "spatial_stats_getis_ord", "alpha", default=0.05
+            )
+            correction = get_analysis_parameter(
+                adata, "spatial_stats_getis_ord", "correction", default="none"
+            )
+            z_threshold_stored = get_analysis_parameter(
+                adata, "spatial_stats_getis_ord", "z_threshold", default=None
+            )
 
             # Use corrected p-values when available (matches analysis口径)
             p_corr_key = f"{gene}_getis_ord_p_corrected"
@@ -549,9 +555,17 @@ async def _create_getis_ord_visualization(
                 plt.colorbar(scatter, ax=ax, label="Gi* Z-score")
 
             # Count significant hot/cold spots using analysis-time criteria
+            # Derive z_threshold from alpha (matches analysis-time calculation)
+            from scipy.stats import norm as _norm
+
+            z_thresh = (
+                float(z_threshold_stored)
+                if z_threshold_stored is not None
+                else _norm.ppf(1 - sig_alpha / 2)
+            )
             significant = p_vals < sig_alpha
-            hot_spots = np.sum((z_scores > 0) & significant)
-            cold_spots = np.sum((z_scores < 0) & significant)
+            hot_spots = np.sum((z_scores > z_thresh) & significant)
+            cold_spots = np.sum((z_scores < -z_thresh) & significant)
 
             # Format title based on number of panels
             if len(genes_to_plot) == 1:

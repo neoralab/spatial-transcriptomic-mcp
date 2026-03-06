@@ -665,8 +665,10 @@ def test_build_results_keys_dynamic_cluster_variants_and_getis_ord_obs_keys():
     assert set(getis_keys["obs"]) == {
         "g1_getis_ord_z",
         "g1_getis_ord_p",
+        "g1_getis_ord_p_corrected",
         "g2_getis_ord_z",
         "g2_getis_ord_p",
+        "g2_getis_ord_p_corrected",
     }
 
 

@@ -125,7 +125,13 @@ def _build_results_keys(
                 )
         elif analysis_type == "getis_ord":
             for gene in genes:
-                base["obs"].extend([f"{gene}_getis_ord_z", f"{gene}_getis_ord_p"])
+                base["obs"].extend(
+                    [
+                        f"{gene}_getis_ord_z",
+                        f"{gene}_getis_ord_p",
+                        f"{gene}_getis_ord_p_corrected",
+                    ]
+                )
 
     return base
 
@@ -212,9 +218,11 @@ async def analyze_spatial_statistics(
         )
 
         # Store scientific metadata for reproducibility
+        # Use actual analyzed genes (may differ from params.genes when auto-selected)
+        actual_genes = result.get("genes_analyzed", params.genes)
         # Build results keys from registry (single source of truth)
         results_keys_dict = _build_results_keys(
-            params.analysis_type, params.genes, params.cluster_key
+            params.analysis_type, actual_genes, params.cluster_key
         )
 
         # Prepare parameters dict (heterogeneous value types)
@@ -228,6 +236,13 @@ async def analyze_spatial_statistics(
         # Add n_perms based on analysis type
         if params.analysis_type in ["moran", "local_moran", "geary"]:
             parameters_dict["n_perms"] = params.moran_n_perms
+        # Add getis_ord-specific params for downstream consumers (viz, export)
+        if params.analysis_type == "getis_ord":
+            parameters_dict["alpha"] = params.getis_ord_alpha
+            parameters_dict["correction"] = params.getis_ord_correction
+            # z_threshold is derived from alpha; store for downstream consumers
+            if "parameters" in result and "z_threshold" in result["parameters"]:
+                parameters_dict["z_threshold"] = result["parameters"]["z_threshold"]
 
         # Extract statistics for metadata
         statistics_dict = {
@@ -357,6 +372,15 @@ def _extract_result_summary(
         per_gene_results = result.get("results", {})
         total_hot = sum(r.get("n_hot_spots", 0) for r in per_gene_results.values())
         total_cold = sum(r.get("n_cold_spots", 0) for r in per_gene_results.values())
+        # Use corrected counts when available, fall back to raw
+        key_sig = (
+            "n_significant_corrected"
+            if any("n_significant_corrected" in r for r in per_gene_results.values())
+            else "n_significant_raw"
+        )
+        summary["n_significant"] = sum(
+            r.get(key_sig, 0) for r in per_gene_results.values()
+        )
         summary["summary_metrics"] = {
             "total_hotspots": total_hot,
             "total_coldspots": total_cold,
@@ -835,10 +859,17 @@ def _analyze_getis_ord(
     except Exception as e:
         raise ProcessingError(f"Getis-Ord analysis failed: {e}") from e
 
+    # Aggregate n_significant across genes
+    total_significant = sum(
+        r.get("n_significant_corrected", r.get("n_significant_raw", 0))
+        for r in getis_ord_results.values()
+    )
+
     return {
         "method": "Getis-Ord Gi* (star=True)",
         "n_genes_analyzed": len(getis_ord_results),
         "genes_analyzed": list(getis_ord_results),
+        "n_significant": total_significant,
         "parameters": {
             "n_neighbors": params.n_neighbors,
             "alpha": params.getis_ord_alpha,
