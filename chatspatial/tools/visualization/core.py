@@ -633,8 +633,12 @@ def plot_spatial_feature(
             plot_values = get_gene_expression(adata, feature)
             is_categorical = False
         elif feature in adata.obs.columns:
-            plot_values = adata.obs[feature].values
-            is_categorical = pd.api.types.is_categorical_dtype(adata.obs[feature])
+            col = adata.obs[feature]
+            plot_values = col.values
+            # Treat both Categorical and object/string dtypes as categorical
+            is_categorical = pd.api.types.is_categorical_dtype(col) or (
+                col.dtype == object
+            )
         else:
             raise DataNotFoundError(f"Feature '{feature}' not found")
     else:
@@ -642,20 +646,23 @@ def plot_spatial_feature(
 
     # Handle categorical data
     if is_categorical:
-        categories = (
-            plot_values.categories
-            if hasattr(plot_values, "categories")
-            else np.unique(plot_values)
-        )
+        cat_series = pd.Categorical(plot_values)
+        categories = cat_series.categories
         n_cats = len(categories)
-        colors = get_colormap(params.colormap, n_colors=n_cats)
+        colors = get_colormap(params.colormap, n_colors=max(n_cats, 1))
+
         cat_to_idx = {cat: i for i, cat in enumerate(categories)}
-        color_indices = [cat_to_idx[v] for v in plot_values]
+        # NaN/missing → -1 (will be drawn transparent)
+        na_idx = n_cats  # sentinel beyond valid range
+        color_indices = [cat_to_idx[v] if pd.notna(v) else na_idx for v in cat_series]
+        # Build color list: known categories + transparent for NA
+        na_color = (0.8, 0.8, 0.8, 0.3)
+        color_list = list(colors[:n_cats]) + [na_color]
 
         scatter = ax.scatter(
             coords[:, 0],
             coords[:, 1],
-            c=[colors[i] for i in color_indices],
+            c=[color_list[i] for i in color_indices],
             s=spot_size,
             alpha=params.alpha,
         )

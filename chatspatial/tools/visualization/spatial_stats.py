@@ -71,10 +71,6 @@ def _resolve_cluster_key(
         )
     validate_obs_column(adata, cluster_key, "Cluster key")
 
-    # Ensure categorical dtype — downstream code (e.g. .cat.categories) requires it
-    if not pd.api.types.is_categorical_dtype(adata.obs[cluster_key]):
-        adata.obs[cluster_key] = adata.obs[cluster_key].astype("category")
-
     return cluster_key
 
 
@@ -199,7 +195,12 @@ async def _create_co_occurrence_visualization(
             f"with cluster_key='{cluster_key}' first."
         )
 
-    categories = adata.obs[cluster_key].cat.categories.tolist()
+    col = adata.obs[cluster_key]
+    categories = (
+        col.cat.categories.tolist()
+        if pd.api.types.is_categorical_dtype(col)
+        else sorted(col.dropna().unique())
+    )
     max_clusters = 4
     clusters_to_show = categories[:max_clusters]
 

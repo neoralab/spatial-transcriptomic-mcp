@@ -279,7 +279,7 @@ async def test_run_global_comparison_success_builds_contract(monkeypatch):
         lambda *_args, **_kwargs: (top_up, top_down, 2, pd.DataFrame()),
     )
 
-    result = await _run_global_comparison(
+    result, results_df = await _run_global_comparison(
         adata,
         np.array([[1], [2], [3], [4]]),
         pd.Index(["g1"]),
@@ -401,7 +401,9 @@ async def test_run_stratified_comparison_continues_after_cell_type_failure(monke
         ),
     )
 
-    result = await _run_stratified_comparison(adata, raw_X, var_names, ctx, params)
+    result, combined_df = await _run_stratified_comparison(
+        adata, raw_X, var_names, ctx, params
+    )
 
     assert result.statistics["analysis_type"] == "cell_type_stratified"
     assert result.statistics["n_cell_types_analyzed"] == 1
@@ -525,20 +527,23 @@ async def test_compare_conditions_stratified_branch_warns_for_non_integer_counts
         n_samples_condition2 = _kwargs.get("n_samples_condition2", 0)
         results_key = _kwargs.get("results_key", "")
         called["stratified"] = True
-        return ConditionComparisonResult(
-            data_id=data_id,
-            method="pseudobulk",
-            comparison="treated vs control",
-            condition_key="condition",
-            condition1="treated",
-            condition2="control",
-            sample_key="sample",
-            cell_type_key="cell_type",
-            n_samples_condition1=n_samples_condition1,
-            n_samples_condition2=n_samples_condition2,
-            cell_type_results=[],
-            results_key=results_key,
-            statistics={"analysis_type": "cell_type_stratified"},
+        return (
+            ConditionComparisonResult(
+                data_id=data_id,
+                method="pseudobulk",
+                comparison="treated vs control",
+                condition_key="condition",
+                condition1="treated",
+                condition2="control",
+                sample_key="sample",
+                cell_type_key="cell_type",
+                n_samples_condition1=n_samples_condition1,
+                n_samples_condition2=n_samples_condition2,
+                cell_type_results=[],
+                results_key=results_key,
+                statistics={"analysis_type": "cell_type_stratified"},
+            ),
+            None,  # full_results_df
         )
 
     monkeypatch.setattr(cc_module, "require", lambda *_args, **_kwargs: None)

@@ -216,6 +216,8 @@ async def _create_velocity_phase_plot(
         params, n_panels=len(valid_genes), panel_width=4, panel_height=4
     )
     color = params.cluster_key if params.cluster_key else None
+    if color:
+        validate_obs_column(adata, color, "Cluster")
 
     scv.pl.velocity(
         adata,
@@ -358,6 +360,9 @@ async def _create_velocity_heatmap(
             else:
                 var_names = list(adata.var_names[:50])
 
+    if params.cluster_key:
+        validate_obs_column(adata, params.cluster_key, "Cluster")
+
     if context:
         await context.info(f"Creating velocity heatmap with {len(var_names)} genes")
 
@@ -414,16 +419,21 @@ async def _create_velocity_paga_plot(
             f"Available columns: {list(adata.obs.columns)[:10]}"
         )
 
-    # Compute PAGA if not already done or if groups don't match
+    # Compute PAGA on a copy if needed — visualization must not mutate the object
     paga_needs_recompute = (
         "paga" not in adata.uns
         or adata.uns.get("paga", {}).get("groups") != cluster_key
     )
 
     if paga_needs_recompute:
+        from ...utils.adata_utils import shallow_copy_adata
+
         if context:
             await context.info(f"Computing PAGA for cluster_key='{cluster_key}'")
-        sc.tl.paga(adata, groups=cluster_key)
+        adata_plot = shallow_copy_adata(adata)
+        sc.tl.paga(adata_plot, groups=cluster_key)
+    else:
+        adata_plot = adata
 
     if context:
         await context.info(f"Creating PAGA plot for '{cluster_key}'")
@@ -433,7 +443,7 @@ async def _create_velocity_paga_plot(
 
     # Use scanpy's stable paga plotting
     sc.pl.paga(
-        adata,
+        adata_plot,
         color=cluster_key,
         edge_width_scale=0.5,
         ax=ax,

@@ -267,6 +267,8 @@ async def _create_cellrank_circular_projection(
         await context.info("Creating CellRank circular projection")
 
     # Determine keys for coloring
+    if params.cluster_key:
+        validate_obs_column(adata, params.cluster_key, "Cluster")
     keys = [params.cluster_key] if params.cluster_key else None
     if not keys:
         categorical_cols = get_categorical_columns(adata, limit=3)
@@ -330,6 +332,7 @@ async def _create_cellrank_fate_map(
                 await context.info(f"Using cluster_key: '{cluster_key}'")
         else:
             raise ParameterError("cluster_key is required for fate map visualization.")
+    validate_obs_column(adata, cluster_key, "Cluster")
 
     if context:
         await context.info(f"Creating CellRank fate map for '{cluster_key}'")

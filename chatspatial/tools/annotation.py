@@ -1441,8 +1441,19 @@ async def annotate_cell_types(
     from ..utils.adata_utils import store_analysis_metadata
     from ..utils.results_export import export_analysis_result
 
+    # Store per-cell-type counts summary in uns for export
+    counts_key = f"{output_key}_counts"
+    if counts:
+        adata.uns[counts_key] = dict(counts)
+
     # Extract results keys
-    results_keys_dict = {"obs": [output_key], "obsm": [], "uns": []}
+    results_keys_dict: dict[str, list[str]] = {
+        "obs": [output_key],
+        "obsm": [],
+        "uns": [],
+    }
+    if counts:
+        results_keys_dict["uns"].append(counts_key)
     if confidence_key_for_result:
         results_keys_dict["obs"].append(confidence_key)
 

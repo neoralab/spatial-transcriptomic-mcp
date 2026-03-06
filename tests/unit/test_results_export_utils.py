@@ -121,6 +121,102 @@ def test_extract_from_obsm_supports_lineage_like_object():
     assert len(df) == 8
 
 
+def test_extract_from_layers_returns_cells_by_genes_dataframe(
+    minimal_spatial_adata,
+):
+    """Regression: results_export must support layers location (e.g., CNV)."""
+    adata = minimal_spatial_adata.copy()
+    layer_data = np.random.rand(adata.n_obs, adata.n_vars).astype(np.float32)
+    adata.layers["cnv"] = layer_data
+
+    df = re._extract_from_layers(adata, "cnv")
+
+    assert df is not None
+    assert df.shape == (adata.n_obs, adata.n_vars)
+    assert list(df.index) == list(adata.obs_names)
+    assert list(df.columns) == list(adata.var_names)
+
+
+def test_extract_from_layers_returns_none_for_missing_key(
+    minimal_spatial_adata,
+):
+    adata = minimal_spatial_adata.copy()
+    assert re._extract_from_layers(adata, "not_present") is None
+
+
+def test_extract_as_dataframe_routes_layers_location(
+    minimal_spatial_adata,
+):
+    """Regression: _extract_as_dataframe must handle location='layers'."""
+    adata = minimal_spatial_adata.copy()
+    adata.layers["cnv"] = np.ones((adata.n_obs, adata.n_vars))
+
+    df = re._extract_as_dataframe(adata, "layers", "cnv", "cnv_infercnvpy")
+
+    assert isinstance(df, pd.DataFrame)
+    assert df.shape == (adata.n_obs, adata.n_vars)
+
+
+def test_extract_from_uns_handles_dataframe_directly(
+    minimal_spatial_adata,
+):
+    """Regression: pydeseq2_results stored as DataFrame should round-trip."""
+    adata = minimal_spatial_adata.copy()
+    results_df = pd.DataFrame(
+        {"log2FoldChange": [1.5, -0.8], "padj": [0.01, 0.05]},
+        index=["gene1", "gene2"],
+    )
+    adata.uns["pydeseq2_results"] = results_df
+
+    out = re._extract_from_uns(adata, "pydeseq2_results")
+
+    assert isinstance(out, pd.DataFrame)
+    assert list(out.columns) == ["log2FoldChange", "padj"]
+    assert list(out.index) == ["gene1", "gene2"]
+
+
+def test_extract_from_uns_ccc_extracts_results_dataframe(
+    minimal_spatial_adata,
+):
+    """Regression: CCC mixed dict must export the 'results' DataFrame, not garbage."""
+    adata = minimal_spatial_adata.copy()
+    results_df = pd.DataFrame(
+        {
+            "ligand": ["A", "B"],
+            "receptor": ["C", "D"],
+            "lr_means": [1.5, 2.3],
+        }
+    )
+    adata.uns["ccc"] = {
+        "method": "liana",
+        "analysis_type": "cluster",
+        "species": "human",
+        "database": "consensus",
+        "lr_pairs": ["A^C", "B^D"],
+        "results": results_df,
+        "pvalues": None,
+        "statistics": {"n_pairs": 2},
+    }
+
+    out = re._extract_from_uns(adata, "ccc")
+
+    assert isinstance(out, pd.DataFrame)
+    assert list(out.columns) == ["ligand", "receptor", "lr_means"]
+    assert len(out) == 2
+
+
+def test_extract_from_uns_ccc_returns_none_when_no_results_df(
+    minimal_spatial_adata,
+):
+    """CCC without results DataFrame should return None, not garbage."""
+    adata = minimal_spatial_adata.copy()
+    adata.uns["ccc"] = {
+        "method": "liana",
+        "results": None,
+    }
+    assert re._extract_from_uns(adata, "ccc") is None
+
+
 def test_export_analysis_result_continues_when_one_key_extraction_fails(
     minimal_spatial_adata, monkeypatch, tmp_path: Path
 ):

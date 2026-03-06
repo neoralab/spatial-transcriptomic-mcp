@@ -275,11 +275,15 @@ async def analyze_cell_communication(
         from ..utils.adata_utils import store_analysis_metadata
         from ..utils.results_export import export_analysis_result
 
+        obsm_keys: list[str] = []
+        if storage.analysis_type == "spatial":
+            obsm_keys.append(CCC_SPATIAL_SCORES_KEY)
+            if CCC_SPATIAL_PVALS_KEY in adata.obsm:
+                obsm_keys.append(CCC_SPATIAL_PVALS_KEY)
+
         results_keys: dict[str, list[str]] = {
             "obs": [],
-            "obsm": (
-                [CCC_SPATIAL_SCORES_KEY] if storage.analysis_type == "spatial" else []
-            ),
+            "obsm": obsm_keys,
             "uns": [CCC_UNS_KEY],
         }
 

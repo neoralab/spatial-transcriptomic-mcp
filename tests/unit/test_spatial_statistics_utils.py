@@ -189,7 +189,7 @@ async def test_analyze_spatial_statistics_moran_success_path_updates_metadata_an
     monkeypatch.setattr(
         ss,
         "ensure_spatial_neighbors",
-        lambda _a, n_neighs: captured.setdefault("n_neighs", n_neighs),
+        lambda _a, n_neighs=6, **_kw: captured.setdefault("n_neighs", n_neighs),
     )
 
     fake_result = {
@@ -286,6 +286,44 @@ async def test_analyze_spatial_statistics_accepts_result_with_dict_method(
     assert out.n_features_analyzed == 2
     assert out.summary_metrics == {"max_enrichment": 1.2, "min_enrichment": -0.7}
     assert out.results_key == "leiden_nhood_enrichment"
+
+
+@pytest.mark.asyncio
+async def test_analyze_spatial_statistics_passes_alternative_spatial_key(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    """ensure_spatial_neighbors receives detected key when obsm uses X_spatial."""
+    adata = minimal_spatial_adata.copy()
+    coords = adata.obsm.pop("spatial")
+    adata.obsm["X_spatial"] = coords
+
+    captured: dict[str, object] = {}
+
+    def _capture_key(_a, n_neighs=6, spatial_key="spatial"):
+        captured["spatial_key"] = spatial_key
+
+    params = SpatialStatisticsParameters(analysis_type="moran")
+    monkeypatch.setattr(ss, "ensure_spatial_neighbors", _capture_key)
+    monkeypatch.setattr(ss, "store_analysis_metadata", lambda *_a, **_k: None)
+    monkeypatch.setattr(ss, "export_analysis_result", lambda *_a, **_k: [])
+    monkeypatch.setitem(
+        ss._ANALYSIS_REGISTRY,
+        "moran",
+        ss._AnalysisConfig(
+            handler=lambda *_a, **_kw: {
+                "n_genes_analyzed": 0,
+                "n_significant": 0,
+                "top_highest_autocorrelation": [],
+                "mean_morans_i": 0.0,
+                "analysis_key": "moranI",
+            },
+            needs_cluster=False,
+            metadata_keys={"uns": ["moranI"]},
+        ),
+    )
+
+    await ss.analyze_spatial_statistics("d1", DummyCtx(adata), params)
+    assert captured["spatial_key"] == "X_spatial"
 
 
 @pytest.mark.asyncio

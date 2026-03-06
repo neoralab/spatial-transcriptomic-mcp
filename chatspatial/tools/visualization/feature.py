@@ -18,7 +18,6 @@ from scipy.stats import kendalltau, pearsonr, spearmanr
 
 from ...models.data import VisualizationParameters
 from ...utils.adata_utils import (
-    ensure_categorical,
     get_cluster_key,
     get_gene_expression,
 )
@@ -268,8 +267,8 @@ async def _create_single_feature_plot(
         )
 
         if is_categorical:
-            ensure_categorical(adata, feature)
-            categories = adata.obs[feature].cat.categories
+            cat_series = pd.Categorical(values)
+            categories = cat_series.categories
             n_cats = len(categories)
             colors = get_colormap(params.colormap, n_colors=n_cats)
 
@@ -443,8 +442,8 @@ async def _create_multi_feature_plot(
             )
 
             if is_categorical:
-                ensure_categorical(adata, feature)
-                categories = adata.obs[feature].cat.categories
+                cat_series = pd.Categorical(values)
+                categories = cat_series.categories
                 n_cats = len(categories)
                 colors = get_colormap(params.colormap, n_colors=n_cats)
 

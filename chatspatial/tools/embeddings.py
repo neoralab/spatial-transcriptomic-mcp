@@ -11,7 +11,7 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field
 
 from ..spatial_mcp_adapter import ToolContext
-from ..utils.adata_utils import store_analysis_metadata
+from ..utils.adata_utils import get_spatial_key, store_analysis_metadata
 from ..utils.compute import (
     ensure_diffmap,
     ensure_leiden,
@@ -281,11 +281,13 @@ async def compute_embeddings(
     # 6. Spatial neighbors
     if params.compute_spatial_neighbors:
         try:
+            detected_key = get_spatial_key(adata) or "spatial"
             if ensure_spatial_neighbors(
                 adata,
                 coord_type=params.spatial_coord_type,
                 n_neighs=params.spatial_n_neighs,
                 n_rings=params.spatial_n_rings,
+                spatial_key=detected_key,
             ):
                 computed.append("spatial neighbors")
             else:

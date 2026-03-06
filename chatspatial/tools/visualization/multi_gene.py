@@ -212,17 +212,13 @@ def _parse_lr_pairs(
                     ligand, receptor = str(item).split("^", 1)
                     lr_pairs.append((ligand, receptor))
 
-        # 3. Try to get from stored analysis results
+        # 3. Try to get from stored CCC analysis results (unified storage)
         if not lr_pairs and hasattr(adata, "uns"):
-            if "detected_lr_pairs" in adata.uns:
-                lr_pairs = adata.uns["detected_lr_pairs"]
-            elif "cell_communication_results" in adata.uns:
-                comm_results = adata.uns["cell_communication_results"]
-                if "top_lr_pairs" in comm_results:
-                    for pair_str in comm_results["top_lr_pairs"]:
-                        if "^" in pair_str:
-                            ligand, receptor = pair_str.split("^", 1)
-                            lr_pairs.append((ligand, receptor))
+            if "ccc" in adata.uns and "top_lr_pairs" in adata.uns["ccc"]:
+                for pair_str in adata.uns["ccc"]["top_lr_pairs"]:
+                    if "^" in str(pair_str):
+                        ligand, receptor = str(pair_str).split("^", 1)
+                        lr_pairs.append((ligand, receptor))
 
     # No hardcoded defaults - scientific integrity
     if not lr_pairs:

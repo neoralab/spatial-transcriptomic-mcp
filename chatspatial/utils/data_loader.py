@@ -24,6 +24,7 @@ from .adata_utils import (
     check_is_integer_counts,
     ensure_unique_var_names,
     get_adata_profile,
+    get_spatial_key,
 )
 from .dependency_manager import is_available
 from .exceptions import (
@@ -422,15 +423,10 @@ async def load_spatial_data(
     n_cells = adata.n_obs
     n_genes = adata.n_vars
 
-    # Check if spatial coordinates are available
-    # Priority: obsm["spatial"] is the actual coordinate storage location
-    # uns["spatial"] only contains metadata (scalefactors, images) not coordinates
-    spatial_coordinates_available = (
-        hasattr(adata, "obsm")
-        and "spatial" in adata.obsm
-        and adata.obsm["spatial"] is not None
-        and len(adata.obsm["spatial"]) > 0
-    )
+    # Check if spatial coordinates are available using the unified key probe
+    # (supports "spatial", "X_spatial", "coordinates", etc.)
+    spatial_key = get_spatial_key(adata)
+    spatial_coordinates_available = spatial_key is not None
 
     # Check if tissue image is available (for Visium data)
     # Structure: adata.uns["spatial"][library_id]["images"]["hires"/"lowres"]
@@ -458,24 +454,30 @@ async def load_spatial_data(
     if adata.raw is None:
         adata.raw = ad.AnnData(X=adata.X.copy(), var=adata.var)
 
-    # Validate whether the data looks like raw integer counts.
-    # If the loaded X is already normalized (non-integer or has negatives),
-    # do NOT create a counts layer — it would mislead count-based models
-    # (scVI, scANVI, Cell2location, etc.).
-    is_int, has_neg, _ = check_is_integer_counts(adata.X)
+    # Create layers["counts"] from the best available raw-count source.
+    # Priority: adata.X (same shape guaranteed) > adata.raw (must match n_vars).
+    # Avoids shape mismatch when .raw has the full gene set but adata is filtered.
     if "counts" not in adata.layers:
-        if is_int and not has_neg:
-            # Data appears to be raw counts — safe to label as such
-            adata.layers["counts"] = adata.raw.X
+        is_int_x, has_neg_x, _ = check_is_integer_counts(adata.X)
+        if is_int_x and not has_neg_x:
+            # adata.X is raw counts — copy directly (shape always compatible)
+            adata.layers["counts"] = adata.X.copy()
+        elif adata.raw is not None and adata.raw.X.shape[1] == adata.n_vars:
+            # X is normalized but .raw exists with matching gene count
+            is_int_raw, has_neg_raw, _ = check_is_integer_counts(adata.raw.X)
+            if is_int_raw and not has_neg_raw:
+                adata.layers["counts"] = adata.raw.X.copy()
+            else:
+                logger.info(
+                    "Neither adata.X nor adata.raw contain raw integer "
+                    "counts. Skipping layers['counts'] creation."
+                )
         else:
             logger.info(
                 "Loaded data does not appear to contain raw integer counts "
-                "(has_decimals=%s, has_negatives=%s). "
+                "and adata.raw is absent or has incompatible shape. "
                 "Skipping layers['counts'] creation. "
-                "Run preprocess_data() to generate a proper counts layer "
-                "from the original data.",
-                not is_int,
-                has_neg,
+                "Run preprocess_data() to generate a proper counts layer."
             )
 
     # Get metadata profile for LLM understanding

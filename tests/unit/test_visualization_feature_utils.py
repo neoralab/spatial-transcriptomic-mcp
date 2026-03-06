@@ -170,6 +170,26 @@ async def test_create_single_feature_plot_categorical_obs_branch(minimal_spatial
 
 
 @pytest.mark.asyncio
+async def test_create_single_feature_plot_does_not_mutate_obs_dtype(minimal_spatial_adata):
+    """Regression: viz must not convert obs column dtype as side effect."""
+    adata = minimal_spatial_adata.copy()
+    adata.obs["label"] = ["A", "B"] * (adata.n_obs // 2) + ["A"] * (adata.n_obs % 2)
+    assert adata.obs["label"].dtype == object  # pre-condition
+
+    fig = await viz_feature._create_single_feature_plot(
+        adata,
+        VisualizationParameters(plot_type="feature", basis="spatial", feature="label"),
+        "label",
+        "spatial",
+        adata.obsm["spatial"],
+    )
+    assert fig is not None
+    # Must NOT have been mutated to Categorical
+    assert adata.obs["label"].dtype == object
+    plt.close(fig)
+
+
+@pytest.mark.asyncio
 async def test_create_multi_feature_plot_cleans_temp_column(minimal_spatial_adata):
     adata = minimal_spatial_adata.copy()
     fig = await viz_feature._create_multi_feature_plot(

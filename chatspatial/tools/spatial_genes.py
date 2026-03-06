@@ -226,9 +226,11 @@ async def _identify_spatial_genes_spatialde(
     )
 
     # Get raw count data for SpatialDE preprocessing
-    # Use get_raw_data_source (single source of truth) for complete gene coverage
-    # OPTIMIZATION: Filter genes on SPARSE matrix first, then convert only selected genes to dense
-    raw_result = get_raw_data_source(adata, prefer_complete_genes=True)
+    # SpatialDE's official workflow (NaiveDE.stabilize + regress_out) requires
+    # raw counts. Require integer counts to prevent running on normalized data.
+    raw_result = get_raw_data_source(
+        adata, prefer_complete_genes=True, require_integer_counts=True
+    )
     raw_data = raw_result.X
     var_names = raw_result.var_names
     var_df = adata.var  # For HVG lookup (HVG info is in adata.var)
@@ -327,8 +329,7 @@ async def _identify_spatial_genes_spatialde(
     limit = params.n_top_genes or DEFAULT_TOP_GENES_LIMIT
     significant_genes = significant_genes_all[:limit]
 
-    # Store results in adata
-    results_key = f"spatialde_results_{data_id}"
+    # Store results in adata.var (per-gene statistics)
     adata.var["spatialde_pval"] = results.set_index("g")["pval"]
     adata.var["spatialde_qval"] = results.set_index("g")["qval"]
     adata.var["spatialde_l"] = results.set_index("g")["l"]
@@ -371,16 +372,14 @@ async def _identify_spatial_genes_spatialde(
     # from MCP response via Field(exclude=True) in SpatialVariableGenesResult.
     # Full results are accessible via adata.var['spatialde_pval', 'spatialde_qval'].
 
-    result = SpatialVariableGenesResult(
+    return SpatialVariableGenesResult(
         data_id=data_id,
         method="spatialde",
         n_genes_analyzed=len(results),
         n_significant_genes=len(significant_genes_all),
         spatial_genes=significant_genes,
-        results_key=results_key,
+        results_key="spatial_genes_spatialde_metadata",
     )
-
-    return result
 
 
 async def _identify_spatial_genes_flashs(
@@ -418,8 +417,6 @@ async def _identify_spatial_genes_flashs(
     flashs_result = model.fit_test(coords, X, gene_names=gene_names)
 
     # Store full gene-level outputs in adata.var for downstream tools.
-    results_key = f"flashs_results_{data_id}"
-
     adata_var_names = np.asarray(adata.var_names.astype(str))
     input_gene_names = np.asarray(gene_names, dtype=str)
     is_positionally_aligned = len(input_gene_names) == len(
@@ -528,7 +525,7 @@ async def _identify_spatial_genes_flashs(
         n_genes_analyzed=int(flashs_result.n_tested),
         n_significant_genes=int(flashs_result.n_significant),
         spatial_genes=significant_genes,
-        results_key=results_key,
+        results_key="spatial_genes_flashs_metadata",
     )
 
 
@@ -620,7 +617,11 @@ async def _identify_spatial_genes_sparkx(
     # Benefit: For 30k cells × 20k genes → 3k genes: save ~15GB memory
 
     # Get sparse count matrix using get_raw_data_source (single source of truth)
-    raw_result = get_raw_data_source(adata, prefer_complete_genes=True)
+    # SPARK-X is a count-based method — require integer counts to prevent
+    # silent truncation of normalized floats into meaningless integers.
+    raw_result = get_raw_data_source(
+        adata, prefer_complete_genes=True, require_integer_counts=True
+    )
     sparse_counts = raw_result.X  # Keep sparse!
     gene_names = [str(name) for name in raw_result.var_names]
     n_genes = len(gene_names)
@@ -711,7 +712,8 @@ async def _identify_spatial_genes_sparkx(
     # copy=True ensures we don't modify original for dense input
     counts_matrix = to_dense(filtered_sparse, copy=True)
 
-    # Ensure counts are non-negative integers
+    # Safe cast: data is validated as integer counts by get_raw_data_source.
+    # astype(int) converts dtype without lossy truncation.
     counts_matrix = np.maximum(counts_matrix, 0).astype(int)
 
     # Update gene count after filtering
@@ -892,8 +894,7 @@ async def _identify_spatial_genes_sparkx(
                 f"   • Note: This is a quality warning, not an error"
             )
 
-    # Store results in adata
-    results_key = f"sparkx_results_{data_id}"
+    # Store results in adata.var (per-gene statistics)
     adata.var["sparkx_pval"] = pd.Series(
         dict(zip(results_df["gene"], results_df["pvalue"], strict=False)),
         name="sparkx_pval",
@@ -941,13 +942,11 @@ async def _identify_spatial_genes_sparkx(
     # from MCP response via Field(exclude=True) in SpatialVariableGenesResult.
     # Full results are accessible via adata.var['sparkx_pval', 'sparkx_qval'].
 
-    result = SpatialVariableGenesResult(
+    return SpatialVariableGenesResult(
         data_id=data_id,
         method="sparkx",
         n_genes_analyzed=len(results_df),
         n_significant_genes=len(significant_genes_all),
         spatial_genes=significant_genes,
-        results_key=results_key,
+        results_key="spatial_genes_sparkx_metadata",
     )
-
-    return result

@@ -482,13 +482,18 @@ async def _identify_domains_clustering(
         ensure_neighbors(adata, n_neighbors=n_neighbors)
 
         # Add spatial information to the neighborhood graph
-        if "spatial" in adata.obsm:
+        detected_spatial_key = get_spatial_key(adata)
+        if detected_spatial_key is not None:
 
             try:
                 sq = require("squidpy", ctx, feature="spatial neighborhood graph")
 
                 # Use squidpy's scientifically validated spatial neighbors
-                sq.gr.spatial_neighbors(adata, coord_type="generic")
+                sq.gr.spatial_neighbors(
+                    adata,
+                    coord_type="generic",
+                    spatial_key=detected_spatial_key,
+                )
 
                 # Combine expression and spatial graphs
                 expr_weight = 1 - spatial_weight
@@ -536,7 +541,7 @@ async def _identify_domains_clustering(
             "method": params.method,
             "resolution": params.resolution,
             "n_neighbors": n_neighbors,
-            "spatial_weight": spatial_weight if "spatial" in adata.obsm else 0.0,
+            "spatial_weight": spatial_weight if detected_spatial_key else 0.0,
         }
 
         return domain_labels, "X_pca", statistics

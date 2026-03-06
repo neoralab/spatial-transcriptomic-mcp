@@ -517,6 +517,8 @@ async def analyze_rna_velocity(
     # VELOVI results
     if "velocity_velovi_norm" in adata.obs:
         results_keys["obs"].append("velocity_velovi_norm")
+    if "latent_time_velovi" in adata.obs:
+        results_keys["obs"].append("latent_time_velovi")
     if "X_velovi_latent" in adata.obsm:
         results_keys["obsm"].append("X_velovi_latent")
 

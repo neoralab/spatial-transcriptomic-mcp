@@ -123,3 +123,97 @@ def test_add_spatial_info_rejects_invalid_positions_format(
     with pytest.raises(DataCompatibilityError, match="Unexpected tissue positions format"):
         dl._add_spatial_info_to_adata(adata, str(spatial_dir))
 
+
+# =============================================================================
+# Counts layer creation contracts
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_load_creates_counts_from_raw_when_x_is_normalized(
+    minimal_spatial_adata, tmp_path: Path, monkeypatch
+):
+    """When X is normalized but .raw has integer counts, counts layer is created from .raw."""
+    import anndata as ad
+
+    adata = minimal_spatial_adata.copy()
+    # Simulate pre-processed h5ad: X is log-normalized, .raw has integer counts
+    raw_X = adata.X.copy()  # Poisson integers
+    adata.raw = ad.AnnData(X=raw_X, var=adata.var.copy())
+    adata.X = np.log1p(adata.X)  # Now X is float, non-integer
+
+    path = tmp_path / "normalized.h5ad"
+    path.write_text("placeholder")
+
+    fake_scanpy = ModuleType("scanpy")
+    fake_scanpy.read_h5ad = lambda _p: adata
+    monkeypatch.setitem(sys.modules, "scanpy", fake_scanpy)
+
+    result = await dl.load_spatial_data(str(path), "generic")
+    out = result["adata"]
+
+    assert "counts" in out.layers
+    # counts should come from .raw (integer), not from X (float)
+    assert np.allclose(out.layers["counts"].toarray() if hasattr(out.layers["counts"], "toarray") else out.layers["counts"], raw_X)
+
+
+@pytest.mark.asyncio
+async def test_load_does_not_crash_when_raw_has_more_genes(
+    minimal_spatial_adata, tmp_path: Path, monkeypatch
+):
+    """When .raw has more genes than current adata, no shape mismatch crash."""
+    import anndata as ad
+
+    adata = minimal_spatial_adata.copy()
+    # .raw has full gene set
+    n_extra = 10
+    raw_X = np.hstack([
+        adata.X,
+        np.ones((adata.n_obs, n_extra), dtype=np.float32),
+    ])
+    raw_var = pd.DataFrame(
+        index=[f"gene_{i}" for i in range(adata.n_vars + n_extra)]
+    )
+    adata.raw = ad.AnnData(X=raw_X, var=raw_var)
+    # Normalize X so it's not integer
+    adata.X = np.log1p(adata.X)
+
+    path = tmp_path / "filtered.h5ad"
+    path.write_text("placeholder")
+
+    fake_scanpy = ModuleType("scanpy")
+    fake_scanpy.read_h5ad = lambda _p: adata
+    monkeypatch.setitem(sys.modules, "scanpy", fake_scanpy)
+
+    # Should not raise ValueError: shape mismatch
+    result = await dl.load_spatial_data(str(path), "generic")
+    out = result["adata"]
+    # counts layer skipped because .raw shape doesn't match
+    assert "counts" not in out.layers
+
+
+# =============================================================================
+# Spatial key detection contract
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_load_detects_alternative_spatial_keys(
+    minimal_spatial_adata, tmp_path: Path, monkeypatch
+):
+    """spatial_coordinates_available is True for alternative keys like X_spatial."""
+    adata = minimal_spatial_adata.copy()
+    # Move coordinates to alternative key
+    coords = adata.obsm.pop("spatial")
+    adata.obsm["X_spatial"] = coords
+
+    path = tmp_path / "alt_spatial.h5ad"
+    path.write_text("placeholder")
+
+    fake_scanpy = ModuleType("scanpy")
+    fake_scanpy.read_h5ad = lambda _p: adata
+    monkeypatch.setitem(sys.modules, "scanpy", fake_scanpy)
+
+    result = await dl.load_spatial_data(str(path), "generic")
+    assert result["spatial_coordinates_available"] is True
+

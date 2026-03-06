@@ -141,20 +141,13 @@ def test_parse_lr_pairs_supports_multiple_sources(minimal_spatial_adata):
     )
     assert viz_mg._parse_lr_pairs(adata, params) == [("L1", "R1"), ("L2", "R2")]
 
-    adata.uns["cell_communication_results"] = {"top_lr_pairs": ["A^B", "C^D"]}
+    # Unified CCC storage contract: adata.uns["ccc"]["top_lr_pairs"]
+    adata.uns["ccc"] = {"top_lr_pairs": ["A^B", "C^D"]}
     out = viz_mg._parse_lr_pairs(
         adata,
         VisualizationParameters(plot_type="interaction"),
     )
     assert out == [("A", "B"), ("C", "D")]
-
-    adata2 = minimal_spatial_adata.copy()
-    adata2.uns["detected_lr_pairs"] = [("D", "E")]
-    out2 = viz_mg._parse_lr_pairs(
-        adata2,
-        VisualizationParameters(plot_type="interaction"),
-    )
-    assert out2 == [("D", "E")]
 
     explicit = viz_mg._parse_lr_pairs(
         minimal_spatial_adata.copy(),

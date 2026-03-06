@@ -478,9 +478,13 @@ async def analyze_trajectory(
     results_keys_dict: dict[str, Any] = {"obs": [pseudotime_key], "obsm": [], "uns": []}
 
     if method_used == "cellrank":
-        results_keys_dict["obs"].extend(["terminal_states", "macrostates"])
-        results_keys_dict["obsm"].append("fate_probabilities")
-        results_keys_dict["uns"].append("velocity_method")
+        for obs_key in ("terminal_states", "macrostates"):
+            if obs_key in adata.obs.columns:
+                results_keys_dict["obs"].append(obs_key)
+        if "fate_probabilities" in adata.obsm:
+            results_keys_dict["obsm"].append("fate_probabilities")
+        if "velocity_method" in adata.uns:
+            results_keys_dict["uns"].append("velocity_method")
     elif method_used == "palantir":
         results_keys_dict["obsm"].append("palantir_branch_probs")
     elif method_used == "dpt":

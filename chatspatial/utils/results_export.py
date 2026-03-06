@@ -41,41 +41,39 @@ def _get_export_limit(name: str, default: int) -> int:
     return max(1, value)
 
 
-def _trim_export_dataframe(
+def _warn_large_export(
     df: pd.DataFrame,
     *,
     location: str,
     key: str,
-) -> pd.DataFrame:
-    """Apply deterministic row/column caps to keep exports bounded."""
-    max_rows = _get_export_limit("CHATSPATIAL_EXPORT_MAX_ROWS", 50000)
-    max_cols = _get_export_limit("CHATSPATIAL_EXPORT_MAX_COLS", 2000)
-    out = df
+) -> None:
+    """Log warnings for very large exports but never truncate.
 
-    if out.shape[1] > max_cols:
+    Reproducibility exports must be lossless — the exported CSV must match
+    the in-memory analysis result exactly. Truncating silently turns a
+    "reproducibility" artifact into an incomplete subset.
+    """
+    warn_rows = _get_export_limit("CHATSPATIAL_EXPORT_WARN_ROWS", 100000)
+    warn_cols = _get_export_limit("CHATSPATIAL_EXPORT_WARN_COLS", 5000)
+
+    if df.shape[0] > warn_rows:
         logger.warning(
-            "Trimming export columns for %s/%s: %d -> %d",
+            "Large export for %s/%s: %d rows (warning threshold: %d). "
+            "Consider increasing CHATSPATIAL_EXPORT_WARN_ROWS if expected.",
             location,
             key,
-            out.shape[1],
-            max_cols,
+            df.shape[0],
+            warn_rows,
         )
-        out = out.iloc[:, :max_cols]
-
-    if out.shape[0] > max_rows:
-        import numpy as np
-
-        keep_idx = np.linspace(0, out.shape[0] - 1, num=max_rows, dtype=int)
+    if df.shape[1] > warn_cols:
         logger.warning(
-            "Downsampling export rows for %s/%s: %d -> %d",
+            "Wide export for %s/%s: %d columns (warning threshold: %d). "
+            "Consider increasing CHATSPATIAL_EXPORT_WARN_COLS if expected.",
             location,
             key,
-            out.shape[0],
-            max_rows,
+            df.shape[1],
+            warn_cols,
         )
-        out = out.iloc[keep_idx]
-
-    return out
 
 
 # =============================================================================
@@ -168,7 +166,7 @@ def export_analysis_result(
             try:
                 df = _extract_as_dataframe(adata, location, key, analysis_name)
                 if df is not None and len(df) > 0:
-                    df = _trim_export_dataframe(df, location=location, key=key)
+                    _warn_large_export(df, location=location, key=key)
                     # Sanitize key for filename
                     safe_key = key.replace("/", "_").replace("\\", "_")
                     filename = f"{method}_{safe_key}.csv"
@@ -226,6 +224,10 @@ def _extract_as_dataframe(
     if location == "obsm":
         return _extract_from_obsm(adata, key)
 
+    # layers location
+    if location == "layers":
+        return _extract_from_layers(adata, key)
+
     logger.warning(f"Unknown location: {location}")
     return None
 
@@ -256,6 +258,14 @@ def _extract_from_uns(adata: "AnnData", key: str) -> pd.DataFrame | None:
     # Already a DataFrame
     if isinstance(data, pd.DataFrame):
         return data.copy()
+
+    # Special case: unified CCC storage (mixed dict with DataFrames, lists, etc.)
+    # Extract the "results" DataFrame which is the core scientific output.
+    if key == "ccc" and isinstance(data, dict) and "results" in data:
+        results = data["results"]
+        if isinstance(results, pd.DataFrame):
+            return results.copy()
+        return None
 
     # Special case: squidpy nhood_enrichment or co_occurrence
     # Format: {"zscore": np.ndarray, "count": np.ndarray}
@@ -312,9 +322,11 @@ def _extract_squidpy_spatial_result(
         logger.warning(f"Cluster key '{cluster_key}' not found in adata.obs")
         return None
 
+    # Use actually observed values in their order of appearance, not
+    # cat.categories which may include unused levels in wrong order.
     cluster_col = adata.obs[cluster_key]
     if hasattr(cluster_col, "cat"):
-        labels = list(cluster_col.cat.categories)
+        labels = [c for c in cluster_col.cat.categories if (cluster_col == c).any()]
     else:
         labels = list(cluster_col.unique())
 
@@ -485,23 +497,40 @@ def _extract_from_obsm(adata: "AnnData", key: str) -> pd.DataFrame | None:
     return None
 
 
+def _extract_from_layers(adata: "AnnData", key: str) -> pd.DataFrame | None:
+    """Extract a layer from adata.layers and convert to DataFrame (cells x genes)."""
+    if key not in adata.layers:
+        return None
+
+    import numpy as np
+    from scipy import sparse
+
+    data = adata.layers[key]
+    if sparse.issparse(data):
+        data = data.toarray()
+
+    if isinstance(data, np.ndarray):
+        return pd.DataFrame(data, index=adata.obs_names, columns=adata.var_names)
+
+    return None
+
+
 def _infer_obsm_columns(adata: "AnnData", key: str, n_cols: int) -> list[str]:
     """Infer column names for obsm matrices."""
-    # Check for cell type proportions
-    if "cell_type_proportions" in key:
-        # Try to find cell types from deconvolution result
-        method = key.replace("cell_type_proportions_", "")
-        result_key = f"deconvolution_result_{method}"
-        if result_key in adata.uns and "cell_types" in adata.uns[result_key]:
-            return list(adata.uns[result_key]["cell_types"])
+    # Deconvolution: uns["deconvolution_{method}_cell_types"]
+    if key.startswith("deconvolution_"):
+        ct_key = f"{key}_cell_types"
+        if ct_key in adata.uns:
+            ct_list = list(adata.uns[ct_key])
+            if len(ct_list) == n_cols:
+                return ct_list
 
-    # Check for spatial scores with interactions
+    # CCC spatial scores/pvals: uns["ccc"]["lr_pairs"]
     if "spatial_scores" in key or "spatial_pvals" in key:
-        # LIANA spatial results
-        if "liana_spatial_interactions" in adata.uns:
-            interactions = adata.uns["liana_spatial_interactions"]
-            if len(interactions) == n_cols:
-                return list(interactions)
+        if "ccc" in adata.uns and "lr_pairs" in adata.uns["ccc"]:
+            lr_pairs = list(adata.uns["ccc"]["lr_pairs"])
+            if len(lr_pairs) == n_cols:
+                return lr_pairs
 
     # Default: numeric indices
     return [f"{key}_{i}" for i in range(n_cols)]

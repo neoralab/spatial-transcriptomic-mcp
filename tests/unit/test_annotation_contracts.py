@@ -68,8 +68,49 @@ async def test_annotate_cell_types_sctype_happy_path_records_metadata(
     assert out.confidence_key is None
     assert out.cell_types == ["T"]
     assert captured["analysis_name"] == "annotation_sctype"
-    assert captured["results_keys"] == {"obs": ["cell_type_sctype"], "obsm": [], "uns": []}
+    assert captured["results_keys"] == {
+        "obs": ["cell_type_sctype"],
+        "obsm": [],
+        "uns": ["cell_type_sctype_counts"],
+    }
     assert captured["statistics"] == {"n_cell_types": 1}
+
+
+@pytest.mark.asyncio
+async def test_annotate_empty_counts_does_not_register_uns_key(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    """When annotation returns empty counts, no uns key is registered."""
+    adata = minimal_spatial_adata.copy()
+    ctx = DummyCtx({"d1": adata})
+    captured: dict[str, object] = {}
+
+    async def _fake_sctype(_adata, _params, _ctx, output_key, confidence_key):
+        _adata.obs[output_key] = ["T"] * _adata.n_obs
+        return ann.AnnotationMethodOutput(
+            cell_types=["T"],
+            counts={},  # empty counts
+            confidence={},
+            tangram_mapping_score=None,
+        )
+
+    monkeypatch.setattr(ann, "_annotate_with_sctype", _fake_sctype)
+    monkeypatch.setattr(
+        "chatspatial.utils.adata_utils.store_analysis_metadata",
+        lambda _adata, **kwargs: captured.update(kwargs),
+    )
+    monkeypatch.setattr(
+        "chatspatial.utils.results_export.export_analysis_result",
+        lambda *_args, **_kwargs: [],
+    )
+
+    await ann.annotate_cell_types(
+        "d1",
+        ctx,
+        AnnotationParameters(method="sctype", sctype_tissue="Brain"),
+    )
+
+    assert captured["results_keys"]["uns"] == []
 
 
 @pytest.mark.asyncio

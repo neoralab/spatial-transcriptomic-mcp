@@ -527,27 +527,26 @@ async def preprocess_data(
     elif params.normalization == "none":
         # Explicitly skip normalization
 
-        # CRITICAL: Check if data appears to be raw counts
-        # HVG selection requires normalized data for statistical validity
-        X_sample = sample_expression_values(adata)
-
-        # Check if data looks raw (all integers and high values)
-        if np.all((X_sample % 1) == 0) and np.max(X_sample) > 100:
-            error_msg = (
-                "STATISTICAL ERROR: Cannot perform HVG selection on raw counts with normalization='none'\n\n"
-                "Your data appears to be raw counts (integer values with max > 100), but you specified "
-                "normalization='none'. Highly variable gene (HVG) selection requires normalized data "
-                "for statistical validity because:\n"
-                "• Raw count variance scales non-linearly with expression level\n"
-                "• This prevents accurate comparison of variability across genes\n"
-                "• Scanpy's HVG algorithm will fail with 'infinity' errors\n\n"
+        # CRITICAL: Raw integer counts MUST NOT go through standard HVG selection.
+        # Use check_is_integer_counts (same validator as scVI) instead of
+        # ad-hoc heuristic — low-depth platforms (MERFISH, Xenium) have
+        # max values well below 100 but are still raw counts.
+        is_int, _, _ = check_is_integer_counts(adata.X)
+        if is_int:
+            raise DataError(
+                "STATISTICAL ERROR: Cannot perform HVG selection on raw counts "
+                "with normalization='none'.\n\n"
+                "Your data contains integer counts, indicating raw (unnormalized) "
+                "data. HVG selection on raw counts is statistically invalid "
+                "because count variance scales non-linearly with expression "
+                "level.\n\n"
                 "REQUIRED ACTIONS:\n"
-                "Option 1 (Recommended): Use normalization='log' for standard log-normalization\n"
-                "Option 2: Use normalization='pearson_residuals' for variance-stabilizing normalization\n"
-                "Option 3: Pre-normalize your data externally, then reload with normalized values\n\n"
-                "WARNING: If your data is already normalized but appears raw, verify data integrity."
+                "Option 1 (Recommended): Use normalization='log' for standard "
+                "log-normalization\n"
+                "Option 2: Use normalization='pearson_residuals' for "
+                "variance-stabilizing normalization\n"
+                "Option 3: Pre-normalize your data externally, then reload"
             )
-            raise DataError(error_msg)
     elif params.normalization == "scvi":
         # scVI deep learning-based normalization
         # Uses variational autoencoder to learn latent representation

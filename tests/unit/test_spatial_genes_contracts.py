@@ -174,7 +174,7 @@ async def test_spatialde_success_stores_var_outputs_and_metadata(
     monkeypatch.setattr(
         sg,
         "get_raw_data_source",
-        lambda _adata, prefer_complete_genes=True: SimpleNamespace(
+        lambda _adata, **_kw: SimpleNamespace(
             X=_adata.X,
             var_names=_adata.var_names,
             source="raw",
@@ -205,6 +205,8 @@ async def test_spatialde_success_stores_var_outputs_and_metadata(
         "spatialde_qval",
         "spatialde_l",
     ]
+    # results_key must point to a real metadata key, not a phantom uns key
+    assert out.results_key == "spatial_genes_spatialde_metadata"
 
 
 @pytest.mark.asyncio
@@ -245,7 +247,7 @@ async def test_flashs_success_stores_var_outputs_and_metadata(
     monkeypatch.setattr(
         sg,
         "get_raw_data_source",
-        lambda _adata, prefer_complete_genes=False: SimpleNamespace(
+        lambda _adata, **_kw: SimpleNamespace(
             X=_adata.X,
             var_names=_adata.var_names,
             source="current",
@@ -280,6 +282,7 @@ async def test_flashs_success_stores_var_outputs_and_metadata(
     assert captured["analysis_name"] == "spatial_genes_flashs"
     assert captured["method"] == "flashs"
     assert "flashs_qval" in captured["results_keys"]["var"]
+    assert out.results_key == "spatial_genes_flashs_metadata"
 
 
 @pytest.mark.asyncio
@@ -312,7 +315,7 @@ async def test_sparkx_requires_hvg_column_when_test_only_hvg_enabled(
     monkeypatch.setattr(
         sg,
         "get_raw_data_source",
-        lambda _adata, prefer_complete_genes=True: SimpleNamespace(
+        lambda _adata, **_kw: SimpleNamespace(
             X=_adata.X,
             var_names=_adata.var_names,
             source="raw",
@@ -337,7 +340,7 @@ async def test_sparkx_raises_when_no_hvgs_found(minimal_spatial_adata, monkeypat
     monkeypatch.setattr(
         sg,
         "get_raw_data_source",
-        lambda _adata, prefer_complete_genes=True: SimpleNamespace(
+        lambda _adata, **_kw: SimpleNamespace(
             X=_adata.X,
             var_names=_adata.var_names,
             source="raw",
@@ -365,7 +368,7 @@ async def test_sparkx_missing_r_package_raises_informative_import_error(
     monkeypatch.setattr(
         sg,
         "get_raw_data_source",
-        lambda _adata, prefer_complete_genes=True: SimpleNamespace(
+        lambda _adata, **_kw: SimpleNamespace(
             X=_adata.X,
             var_names=_adata.var_names,
             source="raw",
@@ -426,7 +429,7 @@ async def test_spatialde_warns_for_large_gene_set_runtime(
     monkeypatch.setattr(
         sg,
         "get_raw_data_source",
-        lambda _adata, prefer_complete_genes=True: SimpleNamespace(
+        lambda _adata, **_kw: SimpleNamespace(
             X=_adata.X,
             var_names=_adata.var_names,
             source="raw",
@@ -497,7 +500,7 @@ async def test_spatialde_prefers_hvgs_and_passes_pi0_to_qvalue(
     monkeypatch.setattr(
         sg,
         "get_raw_data_source",
-        lambda _adata, prefer_complete_genes=True: SimpleNamespace(
+        lambda _adata, **_kw: SimpleNamespace(
             X=_adata.X,
             var_names=_adata.var_names,
             source="raw",
@@ -569,7 +572,7 @@ async def test_spatialde_falls_back_to_expression_when_hvgs_insufficient(
     monkeypatch.setattr(
         sg,
         "get_raw_data_source",
-        lambda _adata, prefer_complete_genes=True: SimpleNamespace(
+        lambda _adata, **_kw: SimpleNamespace(
             X=_adata.X,
             var_names=_adata.var_names,
             source="raw",
@@ -640,7 +643,7 @@ async def test_spatialde_selects_by_expression_without_hvg_column(
     monkeypatch.setattr(
         sg,
         "get_raw_data_source",
-        lambda _adata, prefer_complete_genes=True: SimpleNamespace(
+        lambda _adata, **_kw: SimpleNamespace(
             X=_adata.X,
             var_names=_adata.var_names,
             source="raw",
@@ -705,7 +708,7 @@ async def test_flashs_reindexs_to_adata_var_and_defaults_tested_mask(
     monkeypatch.setattr(
         sg,
         "get_raw_data_source",
-        lambda _adata, prefer_complete_genes=False: SimpleNamespace(
+        lambda _adata, **_kw: SimpleNamespace(
             X=_adata.X[:, :3],
             var_names=pd.Index(["gene_1", "gene_0", "not_in_var"]),
             source="current",
@@ -763,7 +766,7 @@ async def test_sparkx_success_covers_filtering_and_housekeeping_warning(
     monkeypatch.setattr(
         sg,
         "get_raw_data_source",
-        lambda _adata, prefer_complete_genes=True: SimpleNamespace(
+        lambda _adata, **_kw: SimpleNamespace(
             X=np.asarray(_adata.X, dtype=float),
             var_names=_adata.var_names,
             source="raw",
@@ -800,6 +803,7 @@ async def test_sparkx_success_covers_filtering_and_housekeeping_warning(
     assert "sparkx_qval" in adata.var.columns
     assert captured["statistics"]["n_genes_analyzed"] == 4
     assert any("Housekeeping gene dominance detected" in w for w in ctx.warnings)
+    assert out.results_key == "spatial_genes_sparkx_metadata"
 
 
 @pytest.mark.asyncio
@@ -830,7 +834,7 @@ async def test_sparkx_success_with_hvg_only_branch_and_low_result_warning(
     monkeypatch.setattr(
         sg,
         "get_raw_data_source",
-        lambda _adata, prefer_complete_genes=True: SimpleNamespace(
+        lambda _adata, **_kw: SimpleNamespace(
             X=np.asarray(_adata.X, dtype=float),
             var_names=_adata.var_names,
             source="raw",
@@ -875,7 +879,7 @@ async def test_sparkx_hvg_no_overlap_raises_data_error(
     monkeypatch.setattr(
         sg,
         "get_raw_data_source",
-        lambda _adata, prefer_complete_genes=True: SimpleNamespace(
+        lambda _adata, **_kw: SimpleNamespace(
             X=np.asarray(_adata.X[:, :4], dtype=float),
             var_names=pd.Index(["X1", "X2", "X3", "X4"]),
             source="raw",
@@ -934,7 +938,7 @@ async def test_sparkx_invalid_output_formats_raise_processing_error(
     monkeypatch.setattr(
         sg,
         "get_raw_data_source",
-        lambda _adata, prefer_complete_genes=True: SimpleNamespace(
+        lambda _adata, **_kw: SimpleNamespace(
             X=np.asarray(_adata.X, dtype=float),
             var_names=_adata.var_names,
             source="raw",

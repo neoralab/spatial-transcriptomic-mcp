@@ -233,17 +233,33 @@ async def test_preprocess_data_warns_when_hvgs_too_low(monkeypatch: pytest.Monke
 async def test_preprocess_data_rejects_none_normalization_for_raw_counts(monkeypatch: pytest.MonkeyPatch):
     _install_lightweight_preprocess_mocks(monkeypatch)
 
-    def _raw_like_sample(_adata):
-        return np.array([0.0, 10.0, 200.0, 50.0])
-
-    monkeypatch.setattr(preprocessing_mod, "sample_expression_values", _raw_like_sample)
-
+    # _make_adata produces integer counts (Poisson draws) — check_is_integer_counts
+    # detects these regardless of magnitude, catching low-depth platforms too.
     adata = _make_adata(n_obs=10, n_vars=120)
     ctx = DummyCtx(adata)
     params = PreprocessingParameters(normalization="none", filter_mito_pct=None)
 
     with pytest.raises(DataError, match="Cannot perform HVG selection on raw counts"):
         await preprocess_data("d3", ctx, params)
+
+
+@pytest.mark.asyncio
+async def test_preprocess_data_rejects_none_normalization_low_depth_counts(monkeypatch: pytest.MonkeyPatch):
+    """Low-depth integer data (max < 100) is still detected as raw counts."""
+    _install_lightweight_preprocess_mocks(monkeypatch)
+
+    rng = np.random.default_rng(42)
+    # Simulate targeted panel (MERFISH-like): integer counts, max ~ 10
+    X = rng.poisson(2, size=(20, 50)).astype(np.float32)
+    adata = AnnData(X=X)
+    adata.var_names = [f"gene_{i}" for i in range(50)]
+    adata.obs_names = [f"cell_{i}" for i in range(20)]
+
+    ctx = DummyCtx(adata)
+    params = PreprocessingParameters(normalization="none", filter_mito_pct=None)
+
+    with pytest.raises(DataError, match="Cannot perform HVG selection on raw counts"):
+        await preprocess_data("d3_low", ctx, params)
 
 
 @pytest.mark.asyncio

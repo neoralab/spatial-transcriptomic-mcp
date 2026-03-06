@@ -251,6 +251,39 @@ def test_plot_spatial_feature_validates_required_inputs_and_feature_presence(
     plt.close(fig)
 
 
+def test_plot_spatial_feature_handles_object_string_obs_column(
+    minimal_spatial_adata,
+):
+    """Regression: object/string obs columns must be treated as categorical."""
+    adata = minimal_spatial_adata.copy()
+    adata.obs["label"] = ["A", "B"] * (adata.n_obs // 2) + ["A"] * (adata.n_obs % 2)
+    assert adata.obs["label"].dtype == object
+
+    fig, ax = plt.subplots()
+    mappable = viz_core.plot_spatial_feature(
+        adata, ax=ax, feature="label", params=VisualizationParameters()
+    )
+    assert mappable is None  # categorical → no mappable
+    plt.close(fig)
+
+
+def test_plot_spatial_feature_handles_categorical_with_nan(
+    minimal_spatial_adata,
+):
+    """Regression: categorical obs with NaN must not KeyError."""
+    adata = minimal_spatial_adata.copy()
+    labels = ["A", None, "B"] * (adata.n_obs // 3)
+    labels += ["A"] * (adata.n_obs - len(labels))
+    adata.obs["label"] = pd.Categorical(labels)
+
+    fig, ax = plt.subplots()
+    mappable = viz_core.plot_spatial_feature(
+        adata, ax=ax, feature="label", params=VisualizationParameters()
+    )
+    assert mappable is None
+    plt.close(fig)
+
+
 def test_get_categorical_columns_and_infer_basis(minimal_spatial_adata):
     adata = minimal_spatial_adata.copy()
     adata.obs["cluster"] = pd.Categorical(["A"] * adata.n_obs)

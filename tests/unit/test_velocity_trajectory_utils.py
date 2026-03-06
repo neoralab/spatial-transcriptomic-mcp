@@ -976,6 +976,7 @@ async def test_analyze_rna_velocity_velovi_records_velovi_result_keys(
 
     async def _fake_velovi(_adata, **_kwargs):
         _adata.obs["velocity_velovi_norm"] = np.ones(_adata.n_obs, dtype=float)
+        _adata.obs["latent_time_velovi"] = np.linspace(0, 1, _adata.n_obs)
         _adata.obsm["X_velovi_latent"] = np.ones((_adata.n_obs, 2), dtype=float)
         return {"velocity_computed": True}
 
@@ -992,6 +993,7 @@ async def test_analyze_rna_velocity_velovi_records_velovi_result_keys(
     )
     assert out.velocity_computed is True
     assert "velocity_velovi_norm" in captured["results_keys"]["obs"]
+    assert "latent_time_velovi" in captured["results_keys"]["obs"]
     assert "X_velovi_latent" in captured["results_keys"]["obsm"]
 
 
@@ -1410,6 +1412,46 @@ async def test_analyze_trajectory_cellrank_success_records_cellrank_specific_met
     assert captured["parameters"]["kernel_weights"] == (0.7, 0.3)
     assert captured["parameters"]["n_states"] == 4
     assert captured["parameters"]["root_cells"] == [adata.obs_names[0]]
+
+
+@pytest.mark.asyncio
+async def test_cellrank_metadata_omits_absent_keys(
+    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
+):
+    """CellRank metadata only registers keys that actually exist in adata."""
+    adata = minimal_spatial_adata.copy()
+    adata.uns["velocity_graph"] = True
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(traj, "require", lambda *_a, **_k: None)
+    monkeypatch.setitem(__import__("sys").modules, "cellrank", ModuleType("cellrank"))
+
+    def _fake_infer_minimal(_adata, **_kwargs):
+        # Only pseudotime, no terminal_states / macrostates / fate_probabilities
+        _adata.obs["pseudotime"] = np.linspace(0, 1, _adata.n_obs)
+        return _adata
+
+    monkeypatch.setattr(traj, "infer_spatial_trajectory_cellrank", _fake_infer_minimal)
+    monkeypatch.setattr(
+        "chatspatial.utils.adata_utils.store_analysis_metadata",
+        lambda _adata, **kwargs: captured.update(kwargs),
+    )
+    monkeypatch.setattr(
+        "chatspatial.utils.results_export.export_analysis_result",
+        lambda *_a, **_k: [],
+    )
+
+    await traj.analyze_trajectory(
+        "t-cellrank-min",
+        _VelCtx(adata),
+        traj.TrajectoryParameters(method="cellrank"),
+    )
+
+    rk = captured["results_keys"]
+    assert "terminal_states" not in rk["obs"]
+    assert "macrostates" not in rk["obs"]
+    assert "fate_probabilities" not in rk["obsm"]
+    assert "velocity_method" not in rk["uns"]
 
 
 @pytest.mark.asyncio

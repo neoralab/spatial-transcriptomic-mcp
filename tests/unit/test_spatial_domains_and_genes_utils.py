@@ -280,8 +280,7 @@ async def test_identify_domains_clustering_louvain_falls_back_to_leiden(
     class _FakeSq:
         class gr:
             @staticmethod
-            def spatial_neighbors(a, coord_type="generic"):
-                del coord_type
+            def spatial_neighbors(a, **_kw):
                 a.obsp["spatial_connectivities"] = np.eye(a.n_obs, dtype=float)
 
     monkeypatch.setattr(sd, "require", lambda *_a, **_k: _FakeSq)
@@ -318,8 +317,7 @@ async def test_identify_domains_clustering_spatial_graph_failure_is_wrapped(
     class _FakeSq:
         class gr:
             @staticmethod
-            def spatial_neighbors(_a, coord_type="generic"):
-                del coord_type
+            def spatial_neighbors(_a, **_kw):
                 raise RuntimeError("sq boom")
 
     monkeypatch.setattr(sd, "require", lambda *_a, **_k: _FakeSq)

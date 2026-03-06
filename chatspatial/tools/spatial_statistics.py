@@ -42,6 +42,7 @@ from ..models.analysis import SpatialStatisticsResult
 from ..models.data import SpatialStatisticsParameters
 from ..utils.adata_utils import (
     ensure_categorical,
+    get_spatial_key,
     require_spatial_coords,
     select_genes_for_analysis,
     store_analysis_metadata,
@@ -184,8 +185,11 @@ async def analyze_spatial_statistics(
             validate_obs_column(adata, params.cluster_key, "Cluster key")
             ensure_categorical(adata, params.cluster_key)
 
-        # Ensure spatial neighbors and dispatch to analysis
-        ensure_spatial_neighbors(adata, n_neighs=params.n_neighbors)
+        # Ensure spatial neighbors using detected key (supports X_spatial, etc.)
+        detected_key = get_spatial_key(adata) or "spatial"
+        ensure_spatial_neighbors(
+            adata, n_neighs=params.n_neighbors, spatial_key=detected_key
+        )
         config = _ANALYSIS_REGISTRY[params.analysis_type]
         result = config.handler(adata, params, ctx)
 

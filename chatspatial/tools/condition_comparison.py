@@ -152,7 +152,7 @@ async def compare_conditions(
     # Determine analysis mode
     if params.cell_type_key is None:
         # Global analysis (all cells together)
-        result = await _run_global_comparison(
+        result, full_results_df = await _run_global_comparison(
             adata_filtered,
             raw_X,
             var_names,
@@ -163,7 +163,7 @@ async def compare_conditions(
         )
     else:
         # Cell type stratified analysis
-        result = await _run_stratified_comparison(
+        result, full_results_df = await _run_stratified_comparison(
             adata_filtered,
             raw_X,
             var_names,
@@ -182,10 +182,20 @@ async def compare_conditions(
         "statistics": result.statistics,
     }
 
-    # Store metadata for provenance
+    # Store full gene-level DE results as DataFrame for export
+    de_results_key = f"{results_key}_de_results"
+    uns_keys = [results_key]
+    if full_results_df is not None and len(full_results_df) > 0:
+        adata.uns[de_results_key] = full_results_df
+        uns_keys.append(de_results_key)
+
+    # Store metadata for provenance — use comparison-specific analysis_name
+    # so multiple comparisons on the same dataset don't overwrite each other's
+    # provenance and export index entries.
+    analysis_name = results_key  # e.g. "condition_comparison_A_vs_B"
     store_analysis_metadata(
         adata,
-        analysis_name="condition_comparison",
+        analysis_name=analysis_name,
         method="pseudobulk_deseq2",
         parameters={
             "condition_key": params.condition_key,
@@ -194,12 +204,12 @@ async def compare_conditions(
             "sample_key": params.sample_key,
             "cell_type_key": params.cell_type_key,
         },
-        results_keys={"uns": [results_key]},
+        results_keys={"uns": uns_keys},
         statistics=result.statistics,
     )
 
     # Export results for reproducibility
-    export_analysis_result(adata, data_id, "condition_comparison")
+    export_analysis_result(adata, data_id, analysis_name)
 
     return result
 
@@ -401,7 +411,7 @@ async def _run_global_comparison(
     params: ConditionComparisonParameters,
     data_id: str = "",
     results_key: str = "",
-) -> ConditionComparisonResult:
+) -> tuple[ConditionComparisonResult, pd.DataFrame]:
     """Run global comparison (all cells, no cell type stratification).
 
     Args:
@@ -412,7 +422,7 @@ async def _run_global_comparison(
         params: Comparison parameters
 
     Returns:
-        ConditionComparisonResult
+        Tuple of (ConditionComparisonResult, full gene-level results_df)
     """
 
     # Create pseudobulk
@@ -460,31 +470,36 @@ async def _run_global_comparison(
     # Build result
     comparison = f"{params.condition1} vs {params.condition2}"
 
-    return ConditionComparisonResult(
-        data_id=data_id,
-        method="pseudobulk",
-        comparison=comparison,
-        condition_key=params.condition_key,
-        condition1=params.condition1,
-        condition2=params.condition2,
-        sample_key=params.sample_key,
-        cell_type_key=None,
-        n_samples_condition1=n_cond1,
-        n_samples_condition2=n_cond2,
-        global_n_significant=n_significant,
-        global_top_upregulated=top_up,
-        global_top_downregulated=top_down,
-        cell_type_results=None,
-        results_key=results_key,
-        statistics={
-            "analysis_type": "global",
-            "n_pseudobulk_samples": len(counts_df),
-            "n_significant_genes": n_significant,
-            "n_upregulated": len([g for g in top_up if g.padj < params.padj_threshold]),
-            "n_downregulated": len(
-                [g for g in top_down if g.padj < params.padj_threshold]
-            ),
-        },
+    return (
+        ConditionComparisonResult(
+            data_id=data_id,
+            method="pseudobulk",
+            comparison=comparison,
+            condition_key=params.condition_key,
+            condition1=params.condition1,
+            condition2=params.condition2,
+            sample_key=params.sample_key,
+            cell_type_key=None,
+            n_samples_condition1=n_cond1,
+            n_samples_condition2=n_cond2,
+            global_n_significant=n_significant,
+            global_top_upregulated=top_up,
+            global_top_downregulated=top_down,
+            cell_type_results=None,
+            results_key=results_key,
+            statistics={
+                "analysis_type": "global",
+                "n_pseudobulk_samples": len(counts_df),
+                "n_significant_genes": n_significant,
+                "n_upregulated": len(
+                    [g for g in top_up if g.padj < params.padj_threshold]
+                ),
+                "n_downregulated": len(
+                    [g for g in top_down if g.padj < params.padj_threshold]
+                ),
+            },
+        ),
+        results_df,
     )
 
 
@@ -498,7 +513,7 @@ async def _run_stratified_comparison(
     n_samples_condition1: int = 0,
     n_samples_condition2: int = 0,
     results_key: str = "",
-) -> ConditionComparisonResult:
+) -> tuple[ConditionComparisonResult, Optional[pd.DataFrame]]:
     """Run cell type stratified comparison.
 
     Args:
@@ -509,13 +524,14 @@ async def _run_stratified_comparison(
         params: Comparison parameters
 
     Returns:
-        ConditionComparisonResult with cell type stratified results
+        Tuple of (ConditionComparisonResult, combined gene-level results_df or None)
     """
 
     cell_types = adata.obs[params.cell_type_key].unique()
     await ctx.info(f"Found {len(cell_types)} cell types")
 
     cell_type_results: list[CellTypeComparisonResult] = []
+    per_ct_results_dfs: list[pd.DataFrame] = []
     total_significant = 0
 
     for ct in cell_types:
@@ -567,6 +583,11 @@ async def _run_stratified_comparison(
 
             total_significant += n_significant
 
+            # Collect gene-level results with cell type label
+            ct_df = results_df.copy()
+            ct_df["cell_type"] = str(ct)
+            per_ct_results_dfs.append(ct_df)
+
             # Count cells per condition for this cell type
             ct_adata = adata[ct_mask]
             n_cells_cond1 = (
@@ -606,28 +627,34 @@ async def _run_stratified_comparison(
 
     comparison = f"{params.condition1} vs {params.condition2}"
 
-    return ConditionComparisonResult(
-        data_id=data_id,
-        method="pseudobulk",
-        comparison=comparison,
-        condition_key=params.condition_key,
-        condition1=params.condition1,
-        condition2=params.condition2,
-        sample_key=params.sample_key,
-        cell_type_key=params.cell_type_key,
-        n_samples_condition1=n_samples_condition1,
-        n_samples_condition2=n_samples_condition2,
-        global_n_significant=None,
-        global_top_upregulated=None,
-        global_top_downregulated=None,
-        cell_type_results=cell_type_results,
-        results_key=results_key,
-        statistics={
-            "analysis_type": "cell_type_stratified",
-            "n_cell_types_analyzed": len(cell_type_results),
-            "total_significant_genes": total_significant,
-            "cell_types_with_de_genes": len(
-                [r for r in cell_type_results if r.n_significant_genes > 0]
-            ),
-        },
+    # Combine per-cell-type gene-level results into one DataFrame
+    combined_df = pd.concat(per_ct_results_dfs, axis=0) if per_ct_results_dfs else None
+
+    return (
+        ConditionComparisonResult(
+            data_id=data_id,
+            method="pseudobulk",
+            comparison=comparison,
+            condition_key=params.condition_key,
+            condition1=params.condition1,
+            condition2=params.condition2,
+            sample_key=params.sample_key,
+            cell_type_key=params.cell_type_key,
+            n_samples_condition1=n_samples_condition1,
+            n_samples_condition2=n_samples_condition2,
+            global_n_significant=None,
+            global_top_upregulated=None,
+            global_top_downregulated=None,
+            cell_type_results=cell_type_results,
+            results_key=results_key,
+            statistics={
+                "analysis_type": "cell_type_stratified",
+                "n_cell_types_analyzed": len(cell_type_results),
+                "total_significant_genes": total_significant,
+                "cell_types_with_de_genes": len(
+                    [r for r in cell_type_results if r.n_significant_genes > 0]
+                ),
+            },
+        ),
+        combined_df,
     )

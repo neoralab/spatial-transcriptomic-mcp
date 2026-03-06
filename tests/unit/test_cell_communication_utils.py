@@ -400,7 +400,9 @@ async def test_analyze_cell_communication_spatial_writes_obsm_scores(
     assert out.analysis_type == "spatial"
     assert ccc.CCC_SPATIAL_SCORES_KEY in adata.obsm
     assert ccc.CCC_SPATIAL_PVALS_KEY in adata.obsm
-    assert captured["results_keys"]["obsm"] == [ccc.CCC_SPATIAL_SCORES_KEY]
+    # Both scores and pvals must be registered for export
+    assert ccc.CCC_SPATIAL_SCORES_KEY in captured["results_keys"]["obsm"]
+    assert ccc.CCC_SPATIAL_PVALS_KEY in captured["results_keys"]["obsm"]
 
 
 @pytest.mark.asyncio

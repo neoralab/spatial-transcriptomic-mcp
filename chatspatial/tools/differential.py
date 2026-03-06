@@ -614,10 +614,9 @@ async def _run_pydeseq2(
     mean_log2fc = results_df.head(params.n_top_genes)["log2FoldChange"].mean()
     median_pvalue = results_df.head(params.n_top_genes)["padj"].median()
 
-    # Store results in adata.uns for persistence and export compatibility.
-    # Store the DataFrame dict directly (not wrapped in a parent dict) so that
-    # _dict_to_dataframe() can reconstruct it via from_dict(orient="index").
-    adata.uns["pydeseq2_results"] = results_df.to_dict()
+    # Store results as DataFrame directly — anndata supports DataFrames in uns
+    # and _extract_from_uns() handles them natively (line 257–258).
+    adata.uns["pydeseq2_results"] = results_df.copy()
 
     # Store metadata for scientific provenance tracking
     store_analysis_metadata(

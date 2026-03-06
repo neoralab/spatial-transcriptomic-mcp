@@ -96,11 +96,7 @@ async def _create_umap_by_batch(
 
     umap_coords = adata.obsm["X_umap"]
     batch_values = adata.obs[batch_key]
-    unique_batches = (
-        batch_values.cat.categories
-        if hasattr(batch_values, "cat")
-        else batch_values.unique()
-    )
+    unique_batches = batch_values.dropna().unique()
 
     # Get colors
     cmap_name = get_categorical_cmap(len(unique_batches))
@@ -185,11 +181,7 @@ async def _create_umap_by_cluster(
 
     umap_coords = adata.obsm["X_umap"]
     cluster_values = adata.obs[cluster_key]
-    unique_clusters = (
-        cluster_values.cat.categories
-        if hasattr(cluster_values, "cat")
-        else cluster_values.unique()
-    )
+    unique_clusters = cluster_values.dropna().unique()
 
     # Get colors
     cmap_name = get_categorical_cmap(len(unique_clusters))
@@ -263,11 +255,7 @@ async def _create_batch_highlight(
 
     umap_coords = adata.obsm["X_umap"]
     batch_values = adata.obs[batch_key]
-    unique_batches = (
-        batch_values.cat.categories
-        if hasattr(batch_values, "cat")
-        else batch_values.unique()
-    )
+    unique_batches = batch_values.dropna().unique()
     n_batches = len(unique_batches)
 
     # Calculate grid layout

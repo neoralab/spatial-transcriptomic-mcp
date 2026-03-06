@@ -273,9 +273,10 @@ async def _create_correlation(
         adata, params, max_features=10, context=context, genes_only=True
     )
 
-    if not available_genes:
+    if len(available_genes) < 2:
         raise ParameterError(
-            "No valid genes found for correlation analysis. "
+            "Correlation analysis requires at least 2 valid genes. "
+            f"Found {len(available_genes)}. "
             "Ensure feature names match genes in var_names."
         )
 

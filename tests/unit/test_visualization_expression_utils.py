@@ -328,6 +328,24 @@ async def test_dotplot_maps_var_groups_and_logs(minimal_spatial_adata, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_correlation_rejects_single_gene(minimal_spatial_adata, monkeypatch):
+    """Regression: correlation requires >= 2 genes; 1 gene must fail early."""
+    adata = minimal_spatial_adata.copy()
+
+    async def _single_gene(*_args, **_kwargs):
+        return ["gene_0"]
+
+    monkeypatch.setattr(expr, "get_validated_features", _single_gene)
+
+    with pytest.raises(ParameterError, match="at least 2 valid genes"):
+        await expr._create_correlation(
+            adata,
+            VisualizationParameters(plot_type="expression", feature=["gene_0"]),
+            context=DummyCtx(),
+        )
+
+
+@pytest.mark.asyncio
 async def test_correlation_uses_requested_method_and_logs(minimal_spatial_adata, monkeypatch):
     adata = minimal_spatial_adata.copy()
     ctx = DummyCtx()

@@ -48,19 +48,20 @@ def test_export_analysis_result_can_be_disabled_by_env(
     assert not (tmp_path / ".chatspatial" / "results" / "d_disabled").exists()
 
 
-def test_trim_export_dataframe_applies_row_and_column_limits(
+def test_warn_large_export_does_not_truncate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("CHATSPATIAL_EXPORT_MAX_ROWS", "3")
-    monkeypatch.setenv("CHATSPATIAL_EXPORT_MAX_COLS", "2")
+    """Reproducibility exports must be lossless — warn but never truncate."""
+    monkeypatch.setenv("CHATSPATIAL_EXPORT_WARN_ROWS", "3")
+    monkeypatch.setenv("CHATSPATIAL_EXPORT_WARN_COLS", "2")
     df = pd.DataFrame(
         np.arange(20, dtype=float).reshape(5, 4),
         columns=["c0", "c1", "c2", "c3"],
     )
 
-    out = re._trim_export_dataframe(df, location="obs", key="demo")
-    assert out.shape == (3, 2)
-    assert list(out.columns) == ["c0", "c1"]
+    # Should not raise or modify df
+    re._warn_large_export(df, location="obs", key="demo")
+    assert df.shape == (5, 4)  # unchanged
 
 
 def test_export_analysis_result_unknown_location_is_skipped(
@@ -252,14 +253,20 @@ def test_extract_as_dataframe_routes_obsm_location(minimal_spatial_adata) -> Non
 
 def test_infer_obsm_columns_prefers_metadata_and_falls_back(minimal_spatial_adata) -> None:
     adata = minimal_spatial_adata.copy()
-    adata.uns["deconvolution_result_spotlight"] = {"cell_types": ["T", "B"]}
-    cols_props = re._infer_obsm_columns(adata, "cell_type_proportions_spotlight", 2)
-    assert cols_props == ["T", "B"]
 
-    adata.uns["liana_spatial_interactions"] = ["A|B", "B|C"]
-    cols_scores = re._infer_obsm_columns(adata, "liana_spatial_scores", 2)
-    assert cols_scores == ["A|B", "B|C"]
+    # Deconvolution: uns["deconvolution_{method}_cell_types"]
+    adata.uns["deconvolution_spotlight_cell_types"] = ["T", "B"]
+    cols_deconv = re._infer_obsm_columns(adata, "deconvolution_spotlight", 2)
+    assert cols_deconv == ["T", "B"]
 
+    # CCC spatial: uns["ccc"]["lr_pairs"]
+    adata.uns["ccc"] = {"lr_pairs": ["A^B", "B^C"]}
+    cols_scores = re._infer_obsm_columns(adata, "ccc_spatial_scores", 2)
+    assert cols_scores == ["A^B", "B^C"]
+    cols_pvals = re._infer_obsm_columns(adata, "ccc_spatial_pvals", 2)
+    assert cols_pvals == ["A^B", "B^C"]
+
+    # Fallback: numeric indices
     cols_default = re._infer_obsm_columns(adata, "x_embed", 3)
     assert cols_default == ["x_embed_0", "x_embed_1", "x_embed_2"]
 
@@ -304,3 +311,28 @@ def test_update_index_recovers_from_invalid_json_and_list_exported_results_missi
     assert loaded["analyses"]["demo"]["method"] == "demo_method"
     assert loaded["analyses"]["demo"]["files"] == ["demo_key.csv"]
     assert loaded["analyses"]["demo"]["parameters"]["path"] == "x/y"
+
+
+def test_extract_squidpy_matrix_filters_unused_categories(
+    minimal_spatial_adata,
+) -> None:
+    """Squidpy matrix export uses only observed categories, not all cat levels."""
+    adata = minimal_spatial_adata.copy()
+
+    # Create a categorical with an unused level "C"
+    adata.obs["cluster"] = pd.Categorical(
+        ["A", "B"] * (adata.n_obs // 2) + ["A"] * (adata.n_obs % 2),
+        categories=["A", "B", "C"],  # "C" is never observed
+    )
+
+    # Key format: {cluster_key}_nhood_enrichment (squidpy convention)
+    # Create a 2x2 matrix matching only observed categories (A, B)
+    matrix_2x2 = np.array([[1.0, 0.5], [0.5, 1.0]])
+    adata.uns["cluster_nhood_enrichment"] = {"zscore": matrix_2x2}
+
+    df = re._extract_from_uns(adata, "cluster_nhood_enrichment")
+    assert df is not None
+    # Should have 2 labels (A, B), not 3 (A, B, C)
+    # Columns are prefixed with metric name: zscore_A, zscore_B
+    assert list(df.columns) == ["zscore_A", "zscore_B"]
+    assert list(df.index) == ["A", "B"]
