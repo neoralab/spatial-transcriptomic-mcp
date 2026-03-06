@@ -244,7 +244,9 @@ def _register_paste(
                 adata.obsm["spatial_registered"] = adata.obsm[spatial_key].copy()
             else:
                 adata.obsm["spatial_registered"] = _transform_coordinates(
-                    pi, slices[reference_idx].obsm["spatial"]
+                    pi,
+                    slices[reference_idx].obsm["spatial"],
+                    query_coords=adata.obsm[spatial_key],
                 )
 
     return registered
@@ -364,14 +366,24 @@ def _register_stalign(
 def _transform_coordinates(
     transport_matrix: np.ndarray,
     reference_coords: np.ndarray,
+    query_coords: Optional[np.ndarray] = None,
 ) -> np.ndarray:
-    """Transform coordinates via optimal transport matrix."""
+    """Transform coordinates via optimal transport matrix.
+
+    Cells with no transport signal (zero rows) retain their original
+    coordinates when *query_coords* is provided, preventing false
+    spatial clustering at the origin.
+    """
     # Equivalent to (transport_matrix / row_sums) @ reference_coords, but avoids
     # materializing a large normalized matrix in memory.
     row_sums = transport_matrix.sum(axis=1, keepdims=True)
+    zero_mask = row_sums.ravel() == 0
     row_sums[row_sums == 0] = 1  # Avoid division by zero
     weighted = transport_matrix @ reference_coords
-    return weighted / row_sums
+    result = weighted / row_sums
+    if query_coords is not None and zero_mask.any():
+        result[zero_mask] = query_coords[zero_mask]
+    return result
 
 
 # =============================================================================

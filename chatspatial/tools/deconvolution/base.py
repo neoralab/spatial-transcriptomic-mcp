@@ -63,6 +63,7 @@ class MethodConfig:
         module_name: Name of the module containing the deconvolve function
         dependencies: Required packages for this method
         is_r_based: Whether method requires R (affects data type conversion)
+        requires_counts: Whether method requires integer count data
         supports_gpu: Whether method supports GPU acceleration
         param_mapping: Mapping from DeconvolutionParameters field -> function arg name
                       This is the single source of truth for parameter extraction.
@@ -81,6 +82,7 @@ class MethodConfig:
     module_name: str
     dependencies: tuple[str, ...]
     is_r_based: bool = False
+    requires_counts: bool = False
     supports_gpu: bool = False
     param_mapping: tuple[tuple[str, str], ...] = field(default_factory=tuple)
 
@@ -176,6 +178,7 @@ async def prepare_deconvolution(
     cell_type_key: str,
     ctx: "ToolContext",
     require_int_dtype: bool = False,
+    require_counts: bool = False,
     min_common_genes: int = 100,
     preprocess: Optional[PreprocessHook] = None,
 ) -> PreparedDeconvolutionData:
@@ -194,6 +197,7 @@ async def prepare_deconvolution(
         cell_type_key: Column in reference.obs containing cell type labels
         ctx: ToolContext for logging
         require_int_dtype: Convert to int32 (required for R-based methods)
+        require_counts: Raise DataError if integer counts unavailable
         min_common_genes: Minimum required gene overlap
         preprocess: Optional async hook for method-specific preprocessing.
                    Signature: async (spatial, reference, ctx) -> (spatial, reference)
@@ -235,10 +239,12 @@ async def prepare_deconvolution(
 
     # 4. Restore raw counts
     spatial_prep = await _prepare_counts(
-        spatial_adata, "Spatial", ctx, require_int_dtype
+        spatial_adata, "Spatial", ctx, require_int_dtype,
+        require_counts=require_counts,
     )
     reference_prep = await _prepare_counts(
-        reference_adata, "Reference", ctx, require_int_dtype
+        reference_adata, "Reference", ctx, require_int_dtype,
+        require_counts=require_counts,
     )
 
     # 5. Optional method-specific preprocessing
@@ -280,18 +286,31 @@ async def _prepare_counts(
     label: str,
     ctx: "ToolContext",
     require_int_dtype: bool,
+    require_counts: bool = False,
 ) -> ad.AnnData:
     """Prepare AnnData by restoring raw counts.
 
     Uses the unified data source priority (layers["counts"] > adata.X)
     to avoid silently using normalized .raw data as counts.
+
+    Args:
+        adata: Input AnnData object.
+        label: Human-readable label for log messages (e.g. "Spatial").
+        ctx: ToolContext for logging.
+        require_int_dtype: Convert to int32 (required for R-based methods).
+        require_counts: If True, raise DataError when no integer counts
+            are available (required for count-based models).
     """
     from ...utils.adata_utils import check_is_integer_counts, get_raw_data_source
 
     # Use SSOT priority: layers["counts"] > adata.X
     # prefer_complete_genes=False because deconvolution needs alignment
     # with current adata dimensions (obsm, obs, spatial coords).
-    result = get_raw_data_source(adata, prefer_complete_genes=False)
+    result = get_raw_data_source(
+        adata,
+        prefer_complete_genes=False,
+        require_integer_counts=require_counts,
+    )
 
     adata_copy = adata.copy()
     adata_copy.X = result.X

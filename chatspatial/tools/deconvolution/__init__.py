@@ -85,6 +85,7 @@ METHOD_REGISTRY: dict[str, MethodConfig] = {
     "cell2location": MethodConfig(
         module_name="cell2location",
         dependencies=("cell2location", "torch"),
+        requires_counts=True,
         supports_gpu=True,
         param_mapping=(
             ("cell2location_ref_model_epochs", "ref_model_epochs"),
@@ -107,6 +108,7 @@ METHOD_REGISTRY: dict[str, MethodConfig] = {
     "destvi": MethodConfig(
         module_name="destvi",
         dependencies=("scvi", "torch"),
+        requires_counts=True,
         supports_gpu=True,
         param_mapping=(
             ("destvi_n_epochs", "n_epochs"),
@@ -123,6 +125,7 @@ METHOD_REGISTRY: dict[str, MethodConfig] = {
     "stereoscope": MethodConfig(
         module_name="stereoscope",
         dependencies=("scvi", "torch"),
+        requires_counts=True,
         supports_gpu=True,
         param_mapping=(
             ("stereoscope_n_epochs", "n_epochs"),
@@ -134,6 +137,7 @@ METHOD_REGISTRY: dict[str, MethodConfig] = {
         module_name="rctd",
         dependencies=("rpy2",),
         is_r_based=True,
+        requires_counts=True,
         param_mapping=(
             ("rctd_mode", "mode"),
             ("rctd_max_cores", "max_cores"),
@@ -146,6 +150,7 @@ METHOD_REGISTRY: dict[str, MethodConfig] = {
         module_name="spotlight",
         dependencies=("rpy2",),
         is_r_based=True,
+        requires_counts=True,
         param_mapping=(
             ("spotlight_n_top_genes", "n_top_genes"),
             ("spotlight_nmf_model", "nmf_model"),
@@ -158,6 +163,7 @@ METHOD_REGISTRY: dict[str, MethodConfig] = {
         module_name="card",
         dependencies=("rpy2",),
         is_r_based=True,
+        requires_counts=True,
         param_mapping=(
             ("card_sample_key", "sample_key"),
             ("card_minCountGene", "minCountGene"),
@@ -268,6 +274,7 @@ async def deconvolve_spatial_data(
         cell_type_key=params.cell_type_key,
         ctx=ctx,
         require_int_dtype=config.is_r_based,
+        require_counts=config.requires_counts,
         preprocess=preprocess_hook,
     )
 

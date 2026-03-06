@@ -367,7 +367,8 @@ async def _create_diversity_map(
     spot_entropy[zero_mask] = 0.0
 
     # Normalize to [0, 1] range
-    max_entropy = np.log2(data.proportions.shape[1])
+    n_cell_types = data.proportions.shape[1]
+    max_entropy = np.log2(n_cell_types) if n_cell_types > 1 else 1.0
     normalized_entropy = spot_entropy / max_entropy
 
     # Get spatial coordinates

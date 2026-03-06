@@ -126,13 +126,22 @@ async def _annotate_with_singler(
         # to ensure dimensions match current adata.var_names
         raw_result = get_raw_data_source(adata, prefer_complete_genes=False)
         test_mat = raw_result.X
-
-    # Ensure log-normalization (SingleR expects log-normalized data)
-    if "log1p" not in adata.uns:
-        await ctx.warning(
-            "Data may not be log-normalized. Applying log1p for SingleR..."
-        )
-        test_mat = np.log1p(test_mat)
+        # Always log-normalize raw data for SingleR.
+        # get_raw_data_source returns raw counts by definition, so we cannot
+        # rely on adata.uns["log1p"] (which only records whether adata.X was
+        # log1p'd during preprocessing, not this raw source).
+        if raw_result.is_integer_counts:
+            await ctx.warning(
+                "Data appears to be raw counts. "
+                "Applying log1p normalization for SingleR..."
+            )
+            test_mat = np.log1p(test_mat)
+        elif "log1p" not in adata.uns:
+            await ctx.warning(
+                "Data may not be log-normalized. "
+                "Applying log1p for SingleR..."
+            )
+            test_mat = np.log1p(test_mat)
 
     # Transpose for SingleR (genes x cells)
     test_mat = test_mat.T

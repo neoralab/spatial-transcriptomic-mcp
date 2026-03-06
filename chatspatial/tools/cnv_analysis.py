@@ -253,9 +253,34 @@ async def _infer_cnv_infercnvpy(
             if n_zeros > n_total / 2:
                 # Majority zeros, median is exactly 0
                 statistics["median_cnv"] = 0.0
+            elif n_total <= 10_000_000:
+                # Small enough to compute exact median via dense conversion
+                statistics["median_cnv"] = float(
+                    np.median(cnv_matrix.toarray())
+                )
             else:
-                # Use non-zero median as approximation
-                statistics["median_cnv"] = float(np.median(cnv_matrix.data))
+                # Large matrix: merge sorted non-zero values with
+                # zero count to find exact median without densifying
+                nz_sorted = np.sort(cnv_matrix.data)
+                zero_pos = int(np.searchsorted(nz_sorted, 0.0))
+
+                def _val_at(idx: int) -> float:
+                    if idx < zero_pos:
+                        return float(nz_sorted[idx])
+                    elif idx < zero_pos + n_zeros:
+                        return 0.0
+                    else:
+                        return float(nz_sorted[idx - n_zeros])
+
+                if n_total % 2 == 1:
+                    statistics["median_cnv"] = _val_at(
+                        n_total // 2
+                    )
+                else:
+                    statistics["median_cnv"] = (
+                        _val_at(n_total // 2 - 1)
+                        + _val_at(n_total // 2)
+                    ) / 2
 
             # Per-cell CNV scores: compute on sparse matrix
             # abs() preserves sparsity
