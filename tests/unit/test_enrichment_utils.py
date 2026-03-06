@@ -697,7 +697,8 @@ def test_perform_gsea_with_ranking_key_persists_results(monkeypatch: pytest.Monk
 
     assert out.method == "gsea"
     assert out.n_gene_sets == 2
-    assert out.n_significant == 0
+    # GSEA uses FDR < 0.25 threshold (Subramanian et al. 2005); GS_A has FDR=0.2
+    assert out.n_significant == 1
     assert set(out.gene_set_statistics) == {"GS_A"}
     assert "gsea_results" in adata.uns
     assert "enrichment_gene_sets" in adata.uns

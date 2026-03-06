@@ -764,7 +764,7 @@ def _analyze_getis_ord(
 
         # Apply multiple testing correction if requested.
         # Both methods correct within each gene across spots (consistent family).
-        if params.getis_ord_correction != "none" and len(genes) > 1:
+        if params.getis_ord_correction != "none":
             if params.getis_ord_correction == "bonferroni":
                 for gene in genes:
                     p_values = all_pvalues[gene]

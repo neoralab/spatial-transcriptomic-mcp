@@ -29,14 +29,26 @@ from ..utils.dependency_manager import require
 from ..utils.exceptions import DataNotFoundError, ParameterError, ProcessingError
 from ..utils.results_export import export_analysis_result
 
+# Subramanian et al. 2005 PNAS: "We recommend an FDR cutoff of 25%"
+_GSEA_FDR_THRESHOLD = 0.25
+
 logger = logging.getLogger(__name__)
 
 # Preferred/legacy library candidates to keep versioning deterministic while
 # remaining backward-compatible with environments missing the latest release.
 GENESET_LIBRARY_CANDIDATES: dict[str, tuple[str, ...]] = {
-    "GO_Biological_Process": ("GO_Biological_Process_2025", "GO_Biological_Process_2023"),
-    "GO_Molecular_Function": ("GO_Molecular_Function_2025", "GO_Molecular_Function_2023"),
-    "GO_Cellular_Component": ("GO_Cellular_Component_2025", "GO_Cellular_Component_2023"),
+    "GO_Biological_Process": (
+        "GO_Biological_Process_2025",
+        "GO_Biological_Process_2023",
+    ),
+    "GO_Molecular_Function": (
+        "GO_Molecular_Function_2025",
+        "GO_Molecular_Function_2023",
+    ),
+    "GO_Cellular_Component": (
+        "GO_Cellular_Component_2025",
+        "GO_Cellular_Component_2023",
+    ),
     "Reactome_Pathways": ("Reactome_Pathways_2024", "Reactome_2022"),
     "MSigDB_Hallmark": ("MSigDB_Hallmark_2020",),
     "Cell_Type_Markers": ("CellMarker_Augmented_2021",),
@@ -66,7 +78,9 @@ def _top_n_desc_indices(values: np.ndarray, n_top: int) -> np.ndarray:
     return top_n_desc_indices(values, n_top, sanitize_nonfinite=True)
 
 
-def _load_library_first_available(database_key: str, organism: str) -> dict[str, list[str]]:
+def _load_library_first_available(
+    database_key: str, organism: str
+) -> dict[str, list[str]]:
     """Load the first available library from deterministic candidates."""
     if database_key not in GENESET_LIBRARY_CANDIDATES:
         raise ParameterError(f"Unknown database key: {database_key}")
@@ -81,7 +95,9 @@ def _load_library_first_available(database_key: str, organism: str) -> dict[str,
 
     if last_error is not None:
         raise last_error
-    raise RuntimeError(f"No library candidates configured for database key: {database_key}")
+    raise RuntimeError(
+        f"No library candidates configured for database key: {database_key}"
+    )
 
 
 # ============================================================================
@@ -137,10 +153,7 @@ def _filter_significant_statistics(
     if fdr_threshold is None:
         method_lower = method.lower()
         if method_lower == "gsea":
-            # GSEA official recommendation: FDR < 0.25
-            # From Subramanian et al. 2005: "An FDR of 25% indicates that the result
-            # is likely to be valid 3 out of 4 times"
-            fdr_threshold = 0.25
+            fdr_threshold = _GSEA_FDR_THRESHOLD
         elif method_lower in ("ora", "enrichr", "pathway_ora", "pathway_enrichr"):
             # ORA and Enrichr: standard statistical threshold
             # Based on Benjamini-Hochberg FDR control at 5%
@@ -596,7 +609,9 @@ def perform_gsea(
             results_keys={"uns": ["gsea_results", "enrichment_gene_sets"]},
             statistics={
                 "n_gene_sets": len(gene_sets),
-                "n_significant": len(results_df[results_df["FDR q-val"] < 0.05]),
+                "n_significant": len(
+                    results_df[results_df["FDR q-val"] < _GSEA_FDR_THRESHOLD]
+                ),
             },
             species=species,
             database=database,
@@ -624,7 +639,9 @@ def perform_gsea(
         return EnrichmentResult(
             method="gsea",
             n_gene_sets=len(gene_sets),
-            n_significant=len(results_df[results_df["FDR q-val"] < 0.05]),
+            n_significant=len(
+                results_df[results_df["FDR q-val"] < _GSEA_FDR_THRESHOLD]
+            ),
             enrichment_scores=filtered_scores,
             pvalues=filtered_pvals,
             adjusted_pvalues=filtered_adj_pvals,
@@ -1488,9 +1505,7 @@ def load_msigdb_gene_sets(
 
         if collection == "H":
             # Hallmark gene sets
-            gene_sets_dict = _load_library_first_available(
-                "MSigDB_Hallmark", organism
-            )
+            gene_sets_dict = _load_library_first_available("MSigDB_Hallmark", organism)
 
         elif collection == "C2" and subcollection == "CP:KEGG":
             # KEGG pathways
