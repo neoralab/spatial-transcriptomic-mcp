@@ -279,7 +279,21 @@ async def differential_expression(
     # CRITICAL: Normalize by library size to avoid composition bias
     lib_sizes = np.asarray(raw_X.sum(axis=1)).ravel()
 
-    median_lib_size = float(np.median(lib_sizes))
+    # Guard against zero library sizes (empty cells/spots) which cause inf
+    zero_lib_mask = lib_sizes == 0
+    if zero_lib_mask.any():
+        n_zero = int(zero_lib_mask.sum())
+        await ctx.warning(
+            f"{n_zero} cells have zero total counts and will be excluded "
+            "from fold change calculation"
+        )
+        lib_sizes_nonzero = lib_sizes[~zero_lib_mask]
+        if len(lib_sizes_nonzero) == 0:
+            median_lib_size = 0.0
+        else:
+            median_lib_size = float(np.median(lib_sizes_nonzero))
+    else:
+        median_lib_size = float(np.median(lib_sizes))
 
     # Calculate fold change for all top genes (batch + vectorized)
     # Pre-filter genes that exist in raw data using set for O(1) lookup
@@ -294,18 +308,29 @@ async def differential_expression(
             "skipping fold change calculation for them"
         )
 
-    if genes_in_raw:
+    if genes_in_raw and median_lib_size > 0:
         # Batch extract expression matrix for all genes at once
         gene_indices = [list(raw_var_names).index(g) for g in genes_in_raw]
         gene_expr_matrix = to_dense(raw_X[:, gene_indices])  # cells × genes
 
-        # Vectorized normalization by library size
-        lib_size_factors = median_lib_size / lib_sizes
+        # Vectorized normalization by library size (exclude zero-lib cells)
+        valid_mask = ~zero_lib_mask
+        lib_size_factors = np.where(valid_mask, median_lib_size / lib_sizes, 0.0)
         gene_norm_matrix = gene_expr_matrix * lib_size_factors[:, np.newaxis]
 
-        # Vectorized mean calculation for each group
-        mean_group1 = gene_norm_matrix[group1_mask].mean(axis=0)
-        mean_group2 = gene_norm_matrix[group2_mask].mean(axis=0)
+        # Vectorized mean calculation for each group (only valid cells)
+        g1_valid = group1_mask & valid_mask
+        g2_valid = group2_mask & valid_mask
+        mean_group1 = (
+            gene_norm_matrix[g1_valid].mean(axis=0)
+            if g1_valid.any()
+            else np.zeros(len(genes_in_raw))
+        )
+        mean_group2 = (
+            gene_norm_matrix[g2_valid].mean(axis=0)
+            if g2_valid.any()
+            else np.zeros(len(genes_in_raw))
+        )
 
         # Vectorized log2 fold change calculation
         log2fc_array = np.log2(
@@ -589,12 +614,10 @@ async def _run_pydeseq2(
     mean_log2fc = results_df.head(params.n_top_genes)["log2FoldChange"].mean()
     median_pvalue = results_df.head(params.n_top_genes)["padj"].median()
 
-    # Store results in adata.uns for persistence
-    adata.uns["pydeseq2_results"] = {
-        "results_df": results_df.to_dict(),
-        "comparison": f"{group1} vs {group2}",
-        "n_samples": n_samples,
-    }
+    # Store results in adata.uns for persistence and export compatibility.
+    # Store the DataFrame dict directly (not wrapped in a parent dict) so that
+    # _dict_to_dataframe() can reconstruct it via from_dict(orient="index").
+    adata.uns["pydeseq2_results"] = results_df.to_dict()
 
     # Store metadata for scientific provenance tracking
     store_analysis_metadata(

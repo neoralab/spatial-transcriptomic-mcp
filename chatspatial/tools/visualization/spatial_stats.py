@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 
 if TYPE_CHECKING:
     import anndata as ad
@@ -69,6 +70,11 @@ def _resolve_cluster_key(
             f"Available categorical columns: {', '.join(categorical_cols)}"
         )
     validate_obs_column(adata, cluster_key, "Cluster key")
+
+    # Ensure categorical dtype — downstream code (e.g. .cat.categories) requires it
+    if not pd.api.types.is_categorical_dtype(adata.obs[cluster_key]):
+        adata.obs[cluster_key] = adata.obs[cluster_key].astype("category")
+
     return cluster_key
 
 
