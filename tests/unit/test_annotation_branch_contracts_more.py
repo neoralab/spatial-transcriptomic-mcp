@@ -591,7 +591,7 @@ async def test_cellassign_non_raw_source_data_cleaning_and_index_predictions(
         def setup_anndata(*_a, **_k):
             return None
 
-        def __init__(self, adata_subset, marker_gene_matrix):
+        def __init__(self, adata_subset, marker_gene_matrix, **_kwargs):
             self._adata = adata_subset
             self._n_types = len(marker_gene_matrix.columns)
 

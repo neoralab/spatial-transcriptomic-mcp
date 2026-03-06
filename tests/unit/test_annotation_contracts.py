@@ -492,7 +492,7 @@ async def test_annotate_with_scanvi_direct_training_success(
             cell_type_key="ctype",
             scanvi_use_scvi_pretrain=False,
             scanvi_query_epochs=2,
-            n_epochs=2,
+            scanvi_scanvi_epochs=2,
         ),
         ctx,
         "cell_type_scanvi",
@@ -517,7 +517,7 @@ async def test_annotate_with_cellassign_probability_output_success(
         def setup_anndata(*_args, **_kwargs):
             return None
 
-        def __init__(self, adata_subset, marker_gene_matrix):
+        def __init__(self, adata_subset, marker_gene_matrix, **_kwargs):
             self._adata = adata_subset
             self._marker_cols = list(marker_gene_matrix.columns)
 
@@ -718,7 +718,7 @@ async def test_annotate_with_scanvi_uses_ndarray_probability_fallback(
             cell_type_key="ctype",
             scanvi_use_scvi_pretrain=False,
             scanvi_query_epochs=2,
-            n_epochs=2,
+            scanvi_scanvi_epochs=2,
         ),
         DummyWarnCtx({"q": adata, "r": ref}),
         "cell_type_scanvi",
@@ -782,7 +782,7 @@ async def test_annotate_with_scanvi_warns_when_probability_extraction_fails(
             cell_type_key="ctype",
             scanvi_use_scvi_pretrain=False,
             scanvi_query_epochs=2,
-            n_epochs=2,
+            scanvi_scanvi_epochs=2,
         ),
         ctx,
         "cell_type_scanvi",

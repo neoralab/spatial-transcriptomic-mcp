@@ -631,7 +631,6 @@ class AnnotationParameters(BaseModel):
         description="tangram/scanvi: require reference_data_id. cellassign: requires marker_genes. singler: uses celldex reference.",
     )
     marker_genes: Optional[dict[str, list[str]]] = None
-    reference_data: Optional[str] = None
     reference_data_id: Optional[str] = (
         None  # For Tangram method - ID of reference single-cell dataset
     )
@@ -671,7 +670,6 @@ class AnnotationParameters(BaseModel):
 
     # General parameters for batch effect and data handling
     batch_key: Optional[str] = None  # For batch effect correction
-    layer: Optional[str] = None  # Which layer to use for analysis
 
     # scANVI parameters (scvi-tools semi-supervised label transfer)
     scanvi_n_hidden: int = Field(

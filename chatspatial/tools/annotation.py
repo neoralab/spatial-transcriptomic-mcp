@@ -879,7 +879,7 @@ async def _annotate_with_scanvi(
         )
 
         model.train(
-            max_epochs=params.n_epochs,
+            max_epochs=params.scanvi_scanvi_epochs,
             n_samples_per_label=params.scanvi_n_samples_per_label,
             early_stopping=True,
             check_val_every_n_epoch=params.scanvi_check_val_every_n_epoch,
@@ -1311,7 +1311,9 @@ async def _annotate_with_cellassign(
     CellAssign.setup_anndata(adata_subset, size_factor_key="size_factors")
 
     # Train CellAssign model
-    model = CellAssign(adata_subset, marker_gene_matrix)
+    model = CellAssign(
+        adata_subset, marker_gene_matrix, n_hidden=params.cellassign_n_hidden
+    )
 
     model.train(
         max_epochs=params.cellassign_max_iter, lr=params.cellassign_learning_rate
