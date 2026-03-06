@@ -5,7 +5,12 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from chatspatial.models.data import AnnotationParameters, PreprocessingParameters, VisualizationParameters
+from chatspatial.models.data import (
+    AnnotationParameters,
+    DifferentialExpressionParameters,
+    PreprocessingParameters,
+    VisualizationParameters,
+)
 from chatspatial.server import (
     annotate_cell_types,
     find_markers,
@@ -41,15 +46,11 @@ async def test_e2e_load_preprocess_find_markers(
         params=preprocess_params,
     )
 
-    marker_params = {"group_key": "group", "method": "wilcoxon", "n_top_genes": 5, "min_cells": 3}
-    e2e_trace.record(step="find_markers", data_id=dataset.id, params=marker_params)
-    result = await find_markers(
-        dataset.id,
-        group_key="group",
-        method="wilcoxon",
-        n_top_genes=5,
-        min_cells=3,
+    marker_params = DifferentialExpressionParameters(
+        group_key="group", method="wilcoxon", n_top_genes=5, min_cells=3
     )
+    e2e_trace.record(step="find_markers", data_id=dataset.id, params=marker_params)
+    result = await find_markers(dataset.id, params=marker_params)
 
     ctx = (
         f"data_id={dataset.id}, "

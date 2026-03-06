@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from chatspatial.models.data import VisualizationParameters
+from chatspatial.models.data import DifferentialExpressionParameters, VisualizationParameters
 from chatspatial.server import (
     analyze_enrichment,
     find_markers,
@@ -30,11 +30,10 @@ async def test_preprocess_data_missing_dataset_raises_data_not_found(reset_data_
 @pytest.mark.asyncio
 async def test_find_markers_invalid_method_raises_validation_error(reset_data_manager):
     with pytest.raises(ValidationError, match="method"):
-        await find_markers(
-            data_id="any",
-            group_key="group",
-            method="not_a_method",
+        params = DifferentialExpressionParameters(
+            group_key="group", method="not_a_method",
         )
+        await find_markers(data_id="any", params=params)
 
 
 @pytest.mark.integration

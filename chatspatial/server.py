@@ -2,7 +2,7 @@
 Main server implementation for ChatSpatial using the Spatial MCP Adapter.
 """
 
-from typing import Any, Literal, Optional, TypeVar, cast
+from typing import Any, Optional, TypeVar
 
 from mcp.server.fastmcp import Context
 
@@ -43,6 +43,7 @@ from .models.data import SpatialStatisticsParameters  # noqa: E402
 from .models.data import SpatialVariableGenesParameters  # noqa: E402
 from .models.data import TrajectoryParameters  # noqa: E402
 from .models.data import VisualizationParameters  # noqa: E402
+from .tools.embeddings import EmbeddingParameters  # noqa: E402
 from .spatial_mcp_adapter import ToolContext  # noqa: E402
 from .spatial_mcp_adapter import create_spatial_mcp_server  # noqa: E402
 from .spatial_mcp_adapter import get_tool_annotations  # noqa: E402
@@ -166,55 +167,24 @@ async def preprocess_data(
 @mcp_tool_error_handler()
 async def compute_embeddings(
     data_id: str,
-    compute_pca: bool = True,
-    compute_neighbors: bool = True,
-    compute_umap: bool = True,
-    compute_clustering: bool = True,
-    compute_diffmap: bool = False,
-    compute_spatial_neighbors: bool = True,
-    n_pcs: int = 30,
-    n_neighbors: int = 15,
-    clustering_resolution: float = 1.0,
-    clustering_method: str = "leiden",
-    force: bool = False,
+    params: Optional[EmbeddingParameters] = None,
     context: Optional[Context] = None,
 ) -> dict[str, Any]:
     """Compute dimensionality reduction, clustering, and neighbor graphs.
 
     Args:
         data_id: Dataset ID
-        compute_*: Boolean flags for each computation type
-        force: Force recomputation even if results exist
+        params: Embedding parameters (PCA, UMAP, clustering, etc.)
 
     Returns:
         Summary of computed embeddings
     """
-    # Lazy import
     from .tools.embeddings import EmbeddingParameters
     from .tools.embeddings import compute_embeddings as compute_embeddings_func
 
-    # Create parameters - cast clustering_method to Literal type
-    clustering_method_literal = cast(Literal["leiden", "louvain"], clustering_method)
-    params = EmbeddingParameters(
-        compute_pca=compute_pca,
-        compute_neighbors=compute_neighbors,
-        compute_umap=compute_umap,
-        compute_clustering=compute_clustering,
-        compute_diffmap=compute_diffmap,
-        compute_spatial_neighbors=compute_spatial_neighbors,
-        n_pcs=n_pcs,
-        n_neighbors=n_neighbors,
-        clustering_resolution=clustering_resolution,
-        clustering_method=clustering_method_literal,
-        force=force,
-    )
-
-    # Create ToolContext
+    resolved = _resolve_params(params, EmbeddingParameters)
     ctx = ToolContext(_data_manager=data_manager, _mcp_context=context)
-
-    # Call function
-    result = await compute_embeddings_func(data_id, ctx, params)
-
+    result = await compute_embeddings_func(data_id, ctx, resolved)
     return result.model_dump()
 
 
@@ -356,55 +326,24 @@ async def analyze_spatial_statistics(
 @mcp_tool_error_handler()
 async def find_markers(
     data_id: str,
-    group_key: str,
-    group1: Optional[str] = None,
-    group2: Optional[str] = None,
-    method: str = "wilcoxon",
-    n_top_genes: int = 25,  # Number of top differentially expressed genes to return
-    pseudocount: float = 1.0,  # Pseudocount for log2 fold change calculation
-    min_cells: int = 3,  # Minimum cells per group for statistical testing
-    sample_key: Optional[str] = None,  # Sample key for pseudobulk (pydeseq2)
+    params: DifferentialExpressionParameters,
     context: Optional[Context] = None,
 ) -> DifferentialExpressionResult:
     """Find differentially expressed genes between groups.
 
     Args:
         data_id: Dataset ID
-        group_key: Column name defining groups
-        group1: First group (if None, compare each group vs rest)
-        group2: Second group (if None, compare group1 vs all others)
-        method: Statistical test ('wilcoxon', 't-test', 'pydeseq2')
-        sample_key: Required for 'pydeseq2' pseudobulk method
+        params: Required - group_key and optional method, group1/group2, etc.
 
     Returns:
         DifferentialExpressionResult with top marker genes
     """
-    # Create ToolContext for clean data access (no redundant dict wrapping)
     ctx = ToolContext(_data_manager=data_manager, _mcp_context=context)
 
-    # Create params object for unified signature pattern
-    params = DifferentialExpressionParameters(
-        group_key=group_key,
-        group1=group1,
-        group2=group2,
-        method=method,  # type: ignore[arg-type]
-        n_top_genes=n_top_genes,
-        pseudocount=pseudocount,
-        min_cells=min_cells,
-        sample_key=sample_key,
-    )
-
-    # Lazy import differential expression tool
     from .tools.differential import differential_expression
 
-    # Call differential expression function with unified (data_id, ctx, params) signature
     result = await differential_expression(data_id, ctx, params)
-
-    # Note: No writeback needed - adata modifications are in-place on the same object
-
-    # Save differential expression result
     await data_manager.save_result(data_id, "differential_expression", result)
-
     return result
 
 
@@ -412,59 +351,24 @@ async def find_markers(
 @mcp_tool_error_handler()
 async def compare_conditions(
     data_id: str,
-    condition_key: str,
-    condition1: str,
-    condition2: str,
-    sample_key: str,
-    cell_type_key: Optional[str] = None,
-    method: str = "pseudobulk",
-    n_top_genes: int = 50,
-    min_cells_per_sample: int = 10,
-    min_samples_per_condition: int = 2,
-    padj_threshold: float = 0.05,
-    log2fc_threshold: float = 0.0,
+    params: ConditionComparisonParameters,
     context: Optional[Context] = None,
 ) -> ConditionComparisonResult:
     """Compare experimental conditions using pseudobulk differential expression (DESeq2).
 
     Args:
         data_id: Dataset ID
-        condition_key: Column with experimental conditions (e.g., 'treatment')
-        condition1: Experimental group
-        condition2: Control group
-        sample_key: Column identifying biological replicates (e.g., 'patient_id')
-        cell_type_key: Optional - if provided, analysis is stratified by cell type
+        params: Required - condition_key, condition1, condition2, sample_key, etc.
 
     Returns:
         ConditionComparisonResult with differential expression results
     """
-    # Create ToolContext
     ctx = ToolContext(_data_manager=data_manager, _mcp_context=context)
 
-    # Create params object
-    params = ConditionComparisonParameters(
-        condition_key=condition_key,
-        condition1=condition1,
-        condition2=condition2,
-        sample_key=sample_key,
-        cell_type_key=cell_type_key,
-        method=method,  # type: ignore[arg-type]
-        n_top_genes=n_top_genes,
-        min_cells_per_sample=min_cells_per_sample,
-        min_samples_per_condition=min_samples_per_condition,
-        padj_threshold=padj_threshold,
-        log2fc_threshold=log2fc_threshold,
-    )
-
-    # Lazy import
     from .tools.condition_comparison import compare_conditions as _compare_conditions
 
-    # Run analysis
     result = await _compare_conditions(data_id, ctx, params)
-
-    # Save result
     await data_manager.save_result(data_id, "condition_comparison", result)
-
     return result
 
 
@@ -472,70 +376,24 @@ async def compare_conditions(
 @mcp_tool_error_handler()
 async def analyze_cnv(
     data_id: str,
-    reference_key: str,
-    reference_categories: list[str],
-    method: str = "infercnvpy",
-    window_size: int = 100,
-    step: int = 10,
-    exclude_chromosomes: Optional[list[str]] = None,
-    dynamic_threshold: Optional[float] = 1.5,
-    cluster_cells: bool = False,
-    dendrogram: bool = False,
-    numbat_genome: str = "hg38",
-    numbat_allele_data_key: str = "allele_counts",
-    numbat_t: float = 0.15,
-    numbat_max_entropy: float = 0.8,
-    numbat_min_cells: int = 10,
-    numbat_ncores: int = 1,
-    numbat_skip_nj: bool = False,
+    params: CNVParameters,
     context: Optional[Context] = None,
 ) -> CNVResult:
     """Analyze copy number variations (CNVs) in spatial transcriptomics data.
 
     Args:
         data_id: Dataset identifier
-        reference_key: Column with cell type labels
-        reference_categories: Cell types to use as normal reference (e.g., ['T cells', 'B cells'])
-        method: 'infercnvpy' (default, expression-based) or 'numbat' (allele-based, requires R)
+        params: Required - reference_key, reference_categories, and optional method/thresholds
 
     Returns:
         CNVResult with CNV scores and optional clone assignments
     """
-    # Create ToolContext for clean data access (no redundant dict wrapping)
     ctx = ToolContext(_data_manager=data_manager, _mcp_context=context)
 
-    # Create CNVParameters object
-    # Type: ignore needed for Literal parameters validated at runtime by Pydantic
-    params = CNVParameters(
-        method=method,  # type: ignore[arg-type]
-        reference_key=reference_key,
-        reference_categories=reference_categories,
-        window_size=window_size,
-        step=step,
-        exclude_chromosomes=exclude_chromosomes,
-        dynamic_threshold=dynamic_threshold,
-        cluster_cells=cluster_cells,
-        dendrogram=dendrogram,
-        numbat_genome=numbat_genome,  # type: ignore[arg-type]
-        numbat_allele_data_key=numbat_allele_data_key,
-        numbat_t=numbat_t,
-        numbat_max_entropy=numbat_max_entropy,
-        numbat_min_cells=numbat_min_cells,
-        numbat_ncores=numbat_ncores,
-        numbat_skip_nj=numbat_skip_nj,
-    )
-
-    # Lazy import CNV analysis tool
     from .tools.cnv_analysis import infer_cnv
 
-    # Call CNV inference function with ToolContext
     result = await infer_cnv(data_id=data_id, ctx=ctx, params=params)
-
-    # Note: No writeback needed - adata modifications are in-place on the same object
-
-    # Save CNV result
     await data_manager.save_result(data_id, "cnv_analysis", result)
-
     return result
 
 

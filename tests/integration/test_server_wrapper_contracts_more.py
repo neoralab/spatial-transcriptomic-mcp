@@ -21,7 +21,9 @@ from chatspatial.models.analysis import (
 )
 from chatspatial.models.data import (
     AnnotationParameters,
+    CNVParameters,
     CellCommunicationParameters,
+    ConditionComparisonParameters,
     DeconvolutionParameters,
     PreprocessingParameters,
     RNAVelocityParameters,
@@ -30,6 +32,7 @@ from chatspatial.models.data import (
     TrajectoryParameters,
     VisualizationParameters,
 )
+from chatspatial.tools.embeddings import EmbeddingParameters
 from chatspatial.server import (
     analyze_cell_communication,
     analyze_cnv,
@@ -54,10 +57,6 @@ async def test_compute_embeddings_returns_model_dump_and_passes_params(
 ):
     calls: dict[str, object] = {}
 
-    class FakeEmbeddingParameters:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
     class FakeEmbeddingResult:
         def model_dump(self):
             return {"ok": True, "computed": ["pca", "neighbors"]}
@@ -69,27 +68,24 @@ async def test_compute_embeddings_returns_model_dump_and_passes_params(
         return FakeEmbeddingResult()
 
     fake_module = SimpleNamespace(
-        EmbeddingParameters=FakeEmbeddingParameters,
+        EmbeddingParameters=EmbeddingParameters,
         compute_embeddings=fake_compute,
     )
     monkeypatch.setitem(sys.modules, "chatspatial.tools.embeddings", fake_module)
 
-    result = await compute_embeddings(
-        "d1",
-        clustering_method="louvain",
-        n_pcs=22,
-        n_neighbors=9,
-        force=True,
+    embed_params = EmbeddingParameters(
+        clustering_method="louvain", n_pcs=22, n_neighbors=9, force=True,
     )
+    result = await compute_embeddings("d1", params=embed_params)
 
     assert result == {"ok": True, "computed": ["pca", "neighbors"]}
     assert calls["data_id"] == "d1"
     params = calls["params"]
-    assert isinstance(params, FakeEmbeddingParameters)
-    assert params.kwargs["clustering_method"] == "louvain"
-    assert params.kwargs["n_pcs"] == 22
-    assert params.kwargs["n_neighbors"] == 9
-    assert params.kwargs["force"] is True
+    assert isinstance(params, EmbeddingParameters)
+    assert params.clustering_method == "louvain"
+    assert params.n_pcs == 22
+    assert params.n_neighbors == 9
+    assert params.force is True
 
 
 @pytest.mark.integration
@@ -145,13 +141,13 @@ async def test_compare_conditions_saves_result_with_expected_key(
 
     monkeypatch.setattr(data_manager, "save_result", fake_save_result)
 
-    result = await compare_conditions(
-        data_id="d2",
+    params = ConditionComparisonParameters(
         condition_key="condition",
         condition1="treated",
         condition2="control",
         sample_key="sample",
     )
+    result = await compare_conditions(data_id="d2", params=params)
 
     assert isinstance(result, ConditionComparisonResult)
     assert calls["data_id"] == "d2"
@@ -186,7 +182,8 @@ async def test_analyze_cnv_saves_result_with_expected_key(
 
     monkeypatch.setattr(data_manager, "save_result", fake_save_result)
 
-    result = await analyze_cnv("d3", reference_key="cell_type", reference_categories=["immune"])
+    cnv_params = CNVParameters(reference_key="cell_type", reference_categories=["immune"])
+    result = await analyze_cnv("d3", params=cnv_params)
     assert isinstance(result, CNVResult)
     assert saved["data_id"] == "d3"
     assert saved["result_type"] == "cnv_analysis"
