@@ -143,6 +143,11 @@ async def identify_spatial_domains(
                 adata_subset = adata.raw[:, raw_gene_mask].to_adata()
             else:
                 adata_subset = adata.raw.to_adata()
+            # adata.raw.to_adata() does not carry obsm; restore spatial coords
+            # so downstream spatial graph construction works correctly.
+            for key in adata.obsm:
+                if key not in adata_subset.obsm:
+                    adata_subset.obsm[key] = adata.obsm[key]
         elif hvg_mask is not None:
             # Use current X with HVG subset
             adata_subset = adata[:, hvg_mask].copy()
@@ -584,7 +589,9 @@ def _refine_spatial_domains(
             return labels
 
         try:
-            nbrs = NearestNeighbors(n_neighbors=k).fit(coords)
+            # Request k+1 neighbors because kneighbors includes the query point
+            # itself as the nearest neighbor (distance=0); we exclude it below.
+            nbrs = NearestNeighbors(n_neighbors=k + 1).fit(coords)
             distances, indices = nbrs.kneighbors(coords)
         except Exception as nn_error:
             # If nearest neighbors fails, raise error
@@ -599,7 +606,9 @@ def _refine_spatial_domains(
 
         for i, neighbors in enumerate(indices):
             original_label = labels_values[i]
-            neighbor_labels = labels_values[neighbors]
+            # Exclude self from neighbor list (first entry is self with dist=0)
+            true_neighbors = neighbors[neighbors != i][:k]
+            neighbor_labels = labels_values[true_neighbors]
 
             # Calculate proportion of neighbors that differ from current label
             different_count = np.sum(neighbor_labels != original_label)

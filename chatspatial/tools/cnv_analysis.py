@@ -195,8 +195,12 @@ async def _infer_cnv_infercnvpy(
 
     # Calculate statistics
     statistics = {}
-    if cnv_score_key and cnv_score_key in adata_cnv.obsm:
-        cnv_matrix = adata_cnv.obsm[cnv_score_key]
+    cnv_matrix = None
+    if cnv_score_key == "X_cnv" and "X_cnv" in adata_cnv.obsm:
+        cnv_matrix = adata_cnv.obsm["X_cnv"]
+    elif cnv_score_key == "cnv" and "cnv" in adata_cnv.layers:
+        cnv_matrix = adata_cnv.layers["cnv"]
+    if cnv_matrix is not None:
 
         # ==================== OPTIMIZED: Compute statistics on sparse matrix ====================
         # Strategy: infercnvpy outputs sparse CSR matrix after noise filtering (Line 448-452)
@@ -263,8 +267,10 @@ async def _infer_cnv_infercnvpy(
     n_genes_analyzed = adata_cnv.n_vars
 
     # Store CNV results back in the original adata object
-    if cnv_score_key and cnv_score_key in adata_cnv.obsm:
-        adata.obsm[cnv_score_key] = adata_cnv.obsm[cnv_score_key]
+    if cnv_score_key == "X_cnv" and "X_cnv" in adata_cnv.obsm:
+        adata.obsm["X_cnv"] = adata_cnv.obsm["X_cnv"]
+    elif cnv_score_key == "cnv" and "cnv" in adata_cnv.layers:
+        adata.layers["cnv"] = adata_cnv.layers["cnv"]
 
     # Store CNV metadata (required for infercnvpy plotting functions)
     if "cnv" in adata_cnv.uns:
@@ -287,8 +293,10 @@ async def _infer_cnv_infercnvpy(
 
     # Build results keys for metadata
     results_keys: dict = {"uns": ["cnv", "cnv_analysis"]}
-    if cnv_score_key:
-        results_keys["obsm"] = [cnv_score_key]
+    if cnv_score_key == "X_cnv":
+        results_keys["obsm"] = ["X_cnv"]
+    elif cnv_score_key == "cnv":
+        results_keys["layers"] = ["cnv"]
     if params.cluster_cells and "cnv_clusters" in adata.obs:
         results_keys.setdefault("obs", []).append("cnv_clusters")
     if params.dendrogram and "dendrogram_cnv_clusters" in adata.uns:
@@ -451,7 +459,8 @@ def _infer_cnv_numbat(
                 ro.globalenv["skip_nj"] = params.numbat_skip_nj
 
                 # Run Numbat via R (inside context!)
-                ro.r("""
+                ro.r(
+                    """
                     library(numbat)
                     library(dplyr)
 
@@ -497,7 +506,8 @@ def _infer_cnv_numbat(
                     }, error = function(e) {
                         stop(paste("Numbat execution failed:", e$message))
                     })
-                    """)
+                    """
+                )
 
         # Read results from output files (Numbat saves to TSV files, not R objects)
         import pandas as pd
