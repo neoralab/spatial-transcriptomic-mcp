@@ -179,7 +179,6 @@ async def compute_embeddings(
     Returns:
         Summary of computed embeddings
     """
-    from .tools.embeddings import EmbeddingParameters
     from .tools.embeddings import compute_embeddings as compute_embeddings_func
 
     resolved = _resolve_params(params, EmbeddingParameters)

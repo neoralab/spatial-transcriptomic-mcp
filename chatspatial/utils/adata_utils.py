@@ -188,10 +188,10 @@ def require_spatial_coords(
     """
     Get validated spatial coordinates array from AnnData.
 
-    This is the single source of truth for spatial coordinate access and
+    Pure read-only accessor and single source of truth for spatial coordinate
     validation. Format unification (obs x/y → obsm['spatial']) is handled
-    upstream by _move_spatial_to_standard() at load time; this function
-    only reads from obsm and validates.
+    upstream by _move_spatial_to_standard() at load time. This function
+    never mutates adata; it reads from obsm or falls back to obs x/y.
 
     Args:
         adata: AnnData object
@@ -217,14 +217,33 @@ def require_spatial_coords(
     """
     # Find spatial key if not specified.
     # Normally obs x/y is already in obsm['spatial'] via _move_spatial_to_standard()
-    # at load time, but handle the case where adata bypassed standardization.
+    # at load time. If not, check obs x/y as a read-only fallback (no mutation).
     if spatial_key is None:
         spatial_key = get_spatial_key(adata)
         if spatial_key is None:
-            # Last resort: try moving obs x/y to obsm['spatial']
-            _move_spatial_to_standard(adata)
-            spatial_key = get_spatial_key(adata)
-        if spatial_key is None:
+            # Read-only fallback: parse obs x/y without writing to obsm
+            if "x" in adata.obs and "y" in adata.obs:
+                try:
+                    x = pd.to_numeric(adata.obs["x"], errors="coerce").values
+                    y = pd.to_numeric(adata.obs["y"], errors="coerce").values
+                    coords = np.column_stack([x, y]).astype("float64")
+                    if validate:
+                        if np.any(np.isnan(coords)):
+                            raise DataError(
+                                "Spatial coordinates in obs['x'/'y'] contain NaN"
+                            )
+                        if np.any(np.isinf(coords)):
+                            raise DataError(
+                                "Spatial coordinates in obs['x'/'y'] contain "
+                                "infinite values"
+                            )
+                        if np.std(coords[:, 0]) == 0 and np.std(coords[:, 1]) == 0:
+                            raise DataError("All spatial coordinates are identical")
+                    return coords
+                except (TypeError, ValueError) as exc:
+                    raise DataError(
+                        f"Failed to parse obs['x'/'y'] as coordinates: {exc}"
+                    ) from exc
             raise DataError(
                 "No spatial coordinates found. Expected in adata.obsm['spatial'] "
                 "or similar key. Available obsm keys: "
