@@ -188,15 +188,18 @@ def integrate_multiple_samples(
             )
             n_hvg = combined.var["highly_variable"].sum()
 
-    # Save raw data if not already saved
-    # IMPORTANT: Create a proper frozen copy for .raw to preserve counts
-    # Using `combined.raw = combined` creates a view that gets modified during normalization
-    if combined.raw is None:
-        combined.raw = ad.AnnData(
-            X=combined.X.copy(),  # Must copy - will be modified during normalization
-            var=combined.var,  # No copy needed - AnnData internally creates independent copy
-            obs=combined.obs.copy(),  # Must copy - will be modified by clustering/annotation
-            uns={},  # Empty dict - raw doesn't need uns metadata
+    # NOTE: Do NOT set combined.raw here if it is None.
+    # Input data is already normalized+log-transformed (see docstring).
+    # Storing it in .raw would violate the contract that .raw holds raw counts,
+    # poisoning downstream tools (differential, deconvolution, annotation) that
+    # rely on get_raw_data_source() treating .raw as the highest-priority count source.
+    # If .raw or layers["counts"] was set during preprocessing, it's already present;
+    # if not, integration should not fabricate one from normalized data.
+    if combined.raw is None and "counts" not in combined.layers:
+        logger.warning(
+            "No raw counts found (adata.raw or layers['counts']). "
+            "Downstream analyses requiring raw counts may be limited. "
+            "Ensure preprocess_data() was run before integration."
         )
 
     # ========================================================================

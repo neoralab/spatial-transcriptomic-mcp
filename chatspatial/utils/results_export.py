@@ -467,8 +467,12 @@ def _extract_from_obsm(adata: "AnnData", key: str) -> pd.DataFrame | None:
             columns=data.names,
         )
 
-    # Regular numpy array
     import numpy as np
+    from scipy import sparse
+
+    # Sparse matrix → densify for export
+    if sparse.issparse(data):
+        data = data.toarray()
 
     if isinstance(data, np.ndarray):
         n_cols = data.shape[1] if len(data.shape) > 1 else 1

@@ -522,11 +522,14 @@ async def test_analyze_velocity_with_velovi_success_handles_zero_latent_time(
             assert unspliced_layer == "Mu"
             called["setup"] = True
 
-        def __init__(self, _adata, n_hidden: int, n_latent: int):
+        def __init__(
+            self, _adata, n_hidden: int, n_latent: int,
+            n_layers: int = 1, dropout_rate: float = 0.1,
+        ):
             assert n_hidden == 32
             assert n_latent == 5
 
-        def train(self, max_epochs: int, accelerator: str):
+        def train(self, max_epochs: int, accelerator: str, lr: float = 1e-3):
             assert max_epochs == 2
             assert accelerator == "cpu"
             called["train"] = True

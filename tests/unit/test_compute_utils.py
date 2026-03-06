@@ -121,11 +121,11 @@ def test_ensure_spatial_neighbors_grid_and_generic_dispatch(minimal_spatial_adat
     monkeypatch.setitem(sys.modules, "squidpy", fake_sq)
 
     assert compute.ensure_spatial_neighbors(adata, coord_type="grid", n_rings=2)
-    assert calls[-1] == {"coord_type": "grid", "n_rings": 2}
+    assert calls[-1] == {"coord_type": "grid", "n_rings": 2, "spatial_key": "spatial"}
 
     del adata.obsp["spatial_connectivities"]
     assert compute.ensure_spatial_neighbors(adata, coord_type="generic", n_neighs=8)
-    assert calls[-1] == {"coord_type": "generic", "n_neighs": 8}
+    assert calls[-1] == {"coord_type": "generic", "n_neighs": 8, "spatial_key": "spatial"}
 
 
 def test_top_n_desc_indices_returns_descending_top_k():

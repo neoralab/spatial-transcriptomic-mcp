@@ -50,8 +50,9 @@ def _parse_lr_pairs_from_features(
 ) -> tuple[list[str], list[tuple[str, str]]]:
     """Parse LR pairs from feature list.
 
-    Detects and extracts LR pair format ("Ligand^Receptor" or "Ligand_Receptor")
-    from feature list.
+    Only the canonical ``^`` separator is recognized (e.g. ``CCL5^CCR5``).
+    Underscore and dash are NOT treated as LR separators because they
+    appear inside legitimate gene names (``HLA_DRA``, ``HLA-A``).
 
     Args:
         features: List of feature names
@@ -60,25 +61,26 @@ def _parse_lr_pairs_from_features(
         Tuple of (regular_features, lr_pairs)
         - regular_features: Features that are not LR pairs
         - lr_pairs: List of (ligand, receptor) tuples
+
+    Raises:
+        ParameterError: If features mix LR pairs with regular features
     """
     regular_features = []
     lr_pairs = []
 
     for feature in features:
         if "^" in feature:
-            # LIANA format: "Ligand^Receptor"
             ligand, receptor = feature.split("^", 1)
             lr_pairs.append((ligand, receptor))
-        elif "_" in feature and not feature.startswith("_"):
-            # Try underscore format, but only if it's clearly a pair
-            parts = feature.split("_")
-            if len(parts) == 2 and all(p[0].isupper() for p in parts if p):
-                # Likely a gene pair (both start with uppercase)
-                lr_pairs.append((parts[0], parts[1]))
-            else:
-                regular_features.append(feature)
         else:
             regular_features.append(feature)
+
+    if lr_pairs and regular_features:
+        raise ParameterError(
+            f"Cannot mix LR pairs ({lr_pairs[0][0]}^{lr_pairs[0][1]}) "
+            f"with regular features ({regular_features[0]}) in one call. "
+            "Use separate visualize_data calls for each type."
+        )
 
     return regular_features, lr_pairs
 
@@ -175,10 +177,17 @@ async def create_feature_visualization(
             adata, params, context, lr_pairs, basis, coords
         )
 
-    # Validate regular features
+    # Validate regular features (pass pre-resolved list so default cluster
+    # key fallback is not lost when params.feature is None)
     validated_features = await get_validated_features(
-        adata, params, max_features=12, context=context
+        adata, params, max_features=12, context=context, features=regular_features
     )
+
+    if not validated_features:
+        raise ParameterError(
+            "No valid features found to visualize. "
+            "Ensure feature names match genes in var_names or columns in obs."
+        )
 
     if context:
         await context.info(

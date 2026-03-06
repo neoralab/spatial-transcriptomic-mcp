@@ -1070,42 +1070,45 @@ async def ensure_unique_var_names_async(
 # =============================================================================
 
 
-def check_is_integer_counts(X: Any, sample_size: int = 100) -> tuple[bool, bool, bool]:
-    """Check if a matrix contains integer counts.
+def check_is_integer_counts(X: Any, sample_size: int = 512) -> tuple[bool, bool, bool]:
+    """Check if a matrix contains integer counts via global random sampling.
 
-    This is a lightweight utility for checking data format without
-    going through the full data source detection logic.
+    Uses unbiased random sampling instead of a fixed sub-block so results
+    do not depend on row/column ordering, batch concatenation order, or
+    gene sorting.  The seed is derived deterministically from the matrix
+    shape and sparsity so repeated calls on the same input are stable.
 
     Args:
         X: Data matrix (sparse or dense)
-        sample_size: Number of rows/cols to sample for efficiency
+        sample_size: Number of elements to sample for efficiency
 
     Returns:
         Tuple of (is_integer, has_negatives, has_decimals)
     """
-    n_rows = min(sample_size, X.shape[0])
-    n_cols = min(sample_size, X.shape[1])
-    if n_rows == 0 or n_cols == 0:
-        return True, False, False
+    # Deterministic seed from matrix metadata (stable across calls)
+    nnz = getattr(X, "nnz", None)
+    seed = hash((X.shape[0], X.shape[1], nnz, sample_size)) & 0xFFFFFFFF
+    rng = np.random.default_rng(seed)
 
-    sample = X[:n_rows, :n_cols]
-
-    # Sparse path: inspect non-zero values directly to avoid dense materialization.
-    if sparse.issparse(sample):
-        sample_data = sample.data
-        if sample_data.size == 0:
+    if sparse.issparse(X):
+        data = X.data
+        if data.size == 0:
             return True, False, False
-        has_negatives = bool(np.any(sample_data < 0))
-        has_decimals = not np.allclose(sample_data, np.round(sample_data), atol=1e-6)
-        is_integer = not has_negatives and not has_decimals
-        return is_integer, has_negatives, bool(has_decimals)
+        k = min(sample_size, data.size)
+        idx = rng.integers(0, data.size, size=k)
+        sample = data[idx]
+    else:
+        arr = np.asarray(X)
+        total = arr.size
+        if total == 0:
+            return True, False, False
+        k = min(sample_size, total)
+        flat = arr.ravel()
+        idx = rng.integers(0, total, size=k)
+        sample = flat[idx]
 
-    sample_arr = np.asarray(sample)
-    if sample_arr.size == 0:
-        return True, False, False
-
-    has_negatives = bool(np.any(sample_arr < 0))
-    has_decimals = not np.allclose(sample_arr, np.round(sample_arr), atol=1e-6)
+    has_negatives = bool(np.any(sample < 0))
+    has_decimals = not np.allclose(sample, np.round(sample), atol=1e-6)
     is_integer = not has_negatives and not has_decimals
 
     return is_integer, has_negatives, bool(has_decimals)

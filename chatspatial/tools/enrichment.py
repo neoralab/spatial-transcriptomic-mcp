@@ -662,6 +662,7 @@ def perform_ora(
     pvalue_threshold: float = 0.05,
     min_size: int = 10,
     max_size: int = 500,
+    adjust_method: str = "fdr",
     species: Optional[str] = None,
     database: Optional[str] = None,
     ctx: Optional["ToolContext"] = None,
@@ -676,6 +677,7 @@ def perform_ora(
         pvalue_threshold: P-value threshold for selecting DEGs.
         min_size: Minimum gene set size.
         max_size: Maximum gene set size.
+        adjust_method: Multiple testing correction ('fdr', 'bonferroni', 'none').
         species: Species for the analysis ('mouse', 'human').
         database: Gene set database used ('KEGG_Pathways', 'GO_Biological_Process').
         ctx: MCP tool context for logging.
@@ -802,12 +804,15 @@ def perform_ora(
         }
 
     # Multiple testing correction
-    if pvalues:
+    _method_map = {"fdr": "fdr_bh", "bonferroni": "bonferroni"}
+    if pvalues and adjust_method != "none":
+        stats_method = _method_map.get(adjust_method, "fdr_bh")
         pval_array = np.array(list(pvalues.values()))
-        _, adjusted_pvals, _, _ = multipletests(pval_array, method="fdr_bh")
+        _, adjusted_pvals, _, _ = multipletests(pval_array, method=stats_method)
         adjusted_pvalues = dict(zip(pvalues.keys(), adjusted_pvals, strict=False))
     else:
-        adjusted_pvalues = {}
+        # No correction: adjusted = raw
+        adjusted_pvalues = dict(pvalues) if pvalues else {}
 
     # Get top results
     sorted_by_pval = sorted(pvalues.items(), key=lambda x: x[1])
@@ -843,6 +848,7 @@ def perform_ora(
         method="ora",
         parameters={
             "pvalue_threshold": pvalue_threshold,
+            "adjust_method": adjust_method,
             "min_size": min_size,
             "max_size": max_size,
             "n_query_genes": len(query_genes),
@@ -1846,6 +1852,7 @@ async def analyze_enrichment(
             pvalue_threshold=params.pvalue_cutoff,
             min_size=params.min_genes,
             max_size=params.max_genes,
+            adjust_method=params.adjust_method,
             species=params.species,
             database=params.gene_set_database,
             ctx=ctx,

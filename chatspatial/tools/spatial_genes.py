@@ -342,7 +342,6 @@ async def _identify_spatial_genes_spatialde(
         analysis_name="spatial_genes_spatialde",
         method="spatialde_official_workflow",
         parameters={
-            "kernel": params.spatialde_kernel,
             "preprocessing": "NaiveDE.stabilize + NaiveDE.regress_out",
             "gene_filter_threshold": 3,
             "n_genes_tested": n_genes,
@@ -765,7 +764,7 @@ async def _identify_spatial_genes_sparkx(
                         X_in=ro.NULL,  # No additional covariates (could be extended in future)
                         numCores=params.sparkx_n_cores,
                         option=params.sparkx_option,
-                        verbose=False,  # Ensure verbose is off for cleaner MCP communication
+                        verbose=params.sparkx_verbose,
                     )
 
                 # Extract p-values from results (inside context for proper conversion)

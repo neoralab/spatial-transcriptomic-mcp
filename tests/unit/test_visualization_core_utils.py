@@ -96,15 +96,16 @@ async def test_get_validated_features_supports_genes_obs_obsm_and_truncation(
     ctx = _Ctx()
     params = VisualizationParameters(
         plot_type="feature",
-        feature=["gene_0", "cluster", "spatial", "missing_feature"],
+        feature=["gene_0", "gene_1", "gene_2", "cluster", "missing_feature"],
     )
 
     validated = await viz_core.get_validated_features(
-        adata, params, context=ctx, max_features=2
+        adata, params, context=ctx, max_features=3
     )
 
-    assert validated == ["gene_0", "cluster"]
-    assert any("not found in genes, obs, or obsm" in w for w in ctx.warnings)
+    # gene_0, gene_1, gene_2, cluster pass; missing_feature rejected; truncated to 3
+    assert validated == ["gene_0", "gene_1", "gene_2"]
+    assert any("not found in genes or obs" in w for w in ctx.warnings)
     assert any("Too many features" in w for w in ctx.warnings)
 
 

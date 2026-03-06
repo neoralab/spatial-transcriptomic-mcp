@@ -134,11 +134,11 @@ def test_parse_lr_pairs_supports_multiple_sources(minimal_spatial_adata):
     adata = minimal_spatial_adata.copy()
     params = VisualizationParameters(
         plot_type="interaction",
-        feature=["L1^R1", "L2_R2"],
+        feature=["L1^R1", "L2^R2"],
     )
     assert viz_mg._parse_lr_pairs(adata, params) == [("L1", "R1"), ("L2", "R2")]
 
-    adata.uns["cell_communication_results"] = {"top_lr_pairs": ["A^B", "C_D"]}
+    adata.uns["cell_communication_results"] = {"top_lr_pairs": ["A^B", "C^D"]}
     out = viz_mg._parse_lr_pairs(
         adata,
         VisualizationParameters(plot_type="interaction"),

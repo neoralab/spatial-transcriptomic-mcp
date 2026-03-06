@@ -81,11 +81,13 @@ async def test_register_spatial_slices_mcp_happy_path_records_metadata(
     )
     monkeypatch.setattr(reg, "export_analysis_result", lambda *_args, **_kwargs: [])
 
+    from chatspatial.models.data import RegistrationParameters
+
     out = await reg.register_spatial_slices_mcp(
         "src",
         "tgt",
         DummyCtx({"src": src, "tgt": tgt}),
-        method="paste",
+        params=RegistrationParameters(method="paste"),
     )
     assert out["registration_completed"] is True
     assert out["spatial_key_registered"] == "spatial_registered"
@@ -112,7 +114,7 @@ async def test_register_spatial_slices_mcp_wraps_runtime_errors(
             "src",
             "tgt",
             DummyCtx({"src": src, "tgt": tgt}),
-            method="paste",
+            params=RegistrationParameters(method="paste"),
         )
 
 
@@ -436,7 +438,10 @@ async def test_register_spatial_slices_mcp_stalign_dependency_branch(
     monkeypatch.setattr(reg, "export_analysis_result", lambda *_args, **_kwargs: None)
 
     out = await reg.register_spatial_slices_mcp(
-        "src", "tgt", DummyCtx({"src": src, "tgt": tgt}), method="stalign"
+        "src",
+        "tgt",
+        DummyCtx({"src": src, "tgt": tgt}),
+        params=RegistrationParameters(method="stalign"),
     )
 
     assert out["method"] == "stalign"

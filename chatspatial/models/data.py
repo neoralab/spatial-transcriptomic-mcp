@@ -194,7 +194,7 @@ class PreprocessingParameters(BaseModel):
     )
 
     # scVI preprocessing parameters - architecture
-    use_scvi_preprocessing: bool = False  # Whether to use scVI for preprocessing
+    # (activated via normalization="scvi", no separate toggle needed)
     scvi_n_hidden: int = 128
     scvi_n_latent: int = 10
     scvi_n_layers: int = 1
@@ -224,10 +224,6 @@ class PreprocessingParameters(BaseModel):
         default="leiden",
         alias="clustering_key",
         description="Key name for clustering results in obs.",
-    )
-    spatial_key: Optional[str] = Field(
-        default=None,
-        description="Spatial coordinate key in obsm (auto-detected if None)",
     )
     batch_key: str = Field(
         default="batch", description="Key name for batch information in obs."
@@ -1387,8 +1383,6 @@ class SpatialVariableGenesParameters(BaseModel):
     spatial_key: str = "spatial"
 
     # SpatialDE-specific parameters
-    spatialde_normalized: bool = True
-    spatialde_kernel: str = "SE"
     spatialde_pi0: Optional[float] = Field(
         default=None,
         gt=0.0,
@@ -1802,10 +1796,6 @@ class CNVParameters(BaseModel):
     # Numbat-specific parameters
     numbat_genome: Literal["hg38", "hg19", "mm10", "mm39"] = Field(
         "hg38", description="Reference genome. Numbat only."
-    )
-    numbat_allele_data_key: str = Field(
-        "allele_counts",
-        description="Layer name in adata containing allele count data",
     )
     numbat_t: Annotated[float, Field(gt=0.0, le=1.0)] = Field(
         0.15, description="Transition probability threshold (default: 0.15)"

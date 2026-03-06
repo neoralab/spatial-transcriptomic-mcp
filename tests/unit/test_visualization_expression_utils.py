@@ -320,8 +320,10 @@ async def test_dotplot_maps_var_groups_and_logs(minimal_spatial_adata, monkeypat
     )
 
     assert fig is not None
-    assert called["var_group_positions"] == ["T cells", "B cells"]
-    assert called["var_group_labels"] == ["T cells", "B cells"]
+    # var_groups dict is passed directly as var_names (scanpy native grouping)
+    assert called["var_names"] == {"T cells": ["gene_0"], "B cells": ["gene_1"]}
+    assert "var_group_positions" not in called
+    assert "var_group_labels" not in called
     assert any("Creating dot plot for 2 genes grouped by leiden" in m for m in ctx.infos)
 
 

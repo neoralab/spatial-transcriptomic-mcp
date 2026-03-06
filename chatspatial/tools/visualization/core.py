@@ -319,6 +319,7 @@ async def get_validated_features(
     context: Optional["ToolContext"] = None,
     max_features: Optional[int] = None,
     genes_only: bool = False,
+    features: Optional[list[str]] = None,
 ) -> list[str]:
     """Validate and return features for visualization.
 
@@ -328,37 +329,34 @@ async def get_validated_features(
         context: Optional tool context for logging
         max_features: Maximum number of features to return (truncates if exceeded)
         genes_only: If True, only validate against var_names (genes).
-                   If False, also check obs columns and obsm keys.
+                   If False, also check obs columns.
+        features: Pre-resolved feature list. When provided, this is used
+                 instead of reading from ``params.feature``, so callers
+                 that have already applied defaults (e.g. cluster key
+                 fallback) can pass them through without losing context.
 
     Returns:
         List of validated feature names
     """
-    if params.feature is None:
-        features: list[str] = []
-    elif isinstance(params.feature, list):
-        features = params.feature
-    else:
-        features = [params.feature]
+    if features is None:
+        if params.feature is None:
+            features = []
+        elif isinstance(params.feature, list):
+            features = params.feature
+        else:
+            features = [params.feature]
+
     validated: list[str] = []
 
     for feat in features:
-        # Check if feature is in var_names (genes)
         if feat in adata.var_names:
             validated.append(feat)
-        elif not genes_only:
-            # Also check obs columns and obsm keys
-            if feat in adata.obs.columns:
-                validated.append(feat)
-            elif feat in adata.obsm:
-                validated.append(feat)
-            else:
-                if context:
-                    await context.warning(
-                        f"Feature '{feat}' not found in genes, obs, or obsm"
-                    )
+        elif not genes_only and feat in adata.obs.columns:
+            validated.append(feat)
         else:
+            where = "var_names" if genes_only else "genes or obs"
             if context:
-                await context.warning(f"Gene '{feat}' not found in var_names")
+                await context.warning(f"Feature '{feat}' not found in {where}")
 
     # Truncate if max_features specified
     if max_features is not None and len(validated) > max_features:

@@ -155,7 +155,8 @@ async def test_differential_all_groups_skips_tiny_groups(monkeypatch: pytest.Mon
 
 
 @pytest.mark.asyncio
-async def test_differential_specific_group_requires_raw_source(monkeypatch: pytest.MonkeyPatch):
+async def test_differential_specific_group_accepts_any_raw_source(monkeypatch: pytest.MonkeyPatch):
+    """Fold change calculation accepts any source from get_raw_data_source (raw, counts, X)."""
     adata = _make_de_adata()
     ctx = DummyCtx(adata)
 
@@ -178,8 +179,9 @@ async def test_differential_specific_group_requires_raw_source(monkeypatch: pyte
         n_top_genes=2,
     )
 
-    with pytest.raises(DataNotFoundError, match="Raw count data"):
-        await differential_expression("d4", ctx, params)
+    result = await differential_expression("d4", ctx, params)
+    assert result is not None
+    assert result.n_genes > 0
 
 
 @pytest.mark.asyncio

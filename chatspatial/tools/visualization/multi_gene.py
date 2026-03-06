@@ -210,22 +210,11 @@ def _parse_lr_pairs(
         )
 
         if feature_list:
-            has_special_format = any(
-                "^" in str(f) or ("_" in str(f) and not str(f).startswith("_"))
-                for f in feature_list
-            )
-
-            if has_special_format:
-                for item in feature_list:
-                    # Handle "Ligand^Receptor" format from LIANA
-                    if "^" in str(item):
-                        ligand, receptor = str(item).split("^", 1)
-                        lr_pairs.append((ligand, receptor))
-                    # Handle "Ligand_Receptor" format
-                    elif "_" in str(item) and not str(item).startswith("_"):
-                        parts = str(item).split("_")
-                        if len(parts) == 2:
-                            lr_pairs.append((parts[0], parts[1]))
+            for item in feature_list:
+                # Only ^ is recognized as LR separator (canonical format)
+                if "^" in str(item):
+                    ligand, receptor = str(item).split("^", 1)
+                    lr_pairs.append((ligand, receptor))
 
         # 3. Try to get from stored analysis results
         if not lr_pairs and hasattr(adata, "uns"):
@@ -238,10 +227,6 @@ def _parse_lr_pairs(
                         if "^" in pair_str:
                             ligand, receptor = pair_str.split("^", 1)
                             lr_pairs.append((ligand, receptor))
-                        elif "_" in pair_str:
-                            parts = pair_str.split("_")
-                            if len(parts) == 2:
-                                lr_pairs.append((parts[0], parts[1]))
 
     # No hardcoded defaults - scientific integrity
     if not lr_pairs:

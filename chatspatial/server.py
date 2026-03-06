@@ -37,6 +37,7 @@ from .models.data import DifferentialExpressionParameters  # noqa: E402
 from .models.data import EnrichmentParameters  # noqa: E402
 from .models.data import IntegrationParameters  # noqa: E402
 from .models.data import PreprocessingParameters  # noqa: E402
+from .models.data import RegistrationParameters  # noqa: E402
 from .models.data import RNAVelocityParameters  # noqa: E402
 from .models.data import SpatialDataset  # noqa: E402
 from .models.data import SpatialDomainParameters  # noqa: E402
@@ -724,7 +725,7 @@ async def find_spatial_genes(
 async def register_spatial_data(
     source_id: str,
     target_id: str,
-    method: str = "paste",
+    params: Optional[RegistrationParameters] = None,
     context: Optional[Context] = None,
 ) -> dict[str, Any]:
     """Register/align spatial transcriptomics data across sections
@@ -732,7 +733,7 @@ async def register_spatial_data(
     Args:
         source_id: Source dataset ID
         target_id: Target dataset ID to align to
-        method: Registration method (paste, stalign)
+        params: Registration parameters (method, alignment settings, etc.)
 
     Returns:
         Registration result with transformation matrix
@@ -743,9 +744,13 @@ async def register_spatial_data(
     # Lazy import to avoid slow startup
     from .tools.spatial_registration import register_spatial_slices_mcp
 
+    resolved_params = _resolve_params(params, RegistrationParameters)
+
     # Call registration function using ToolContext
     # Note: registration modifies adata in-place, changes reflected via reference
-    result = await register_spatial_slices_mcp(source_id, target_id, ctx, method)
+    result = await register_spatial_slices_mcp(
+        source_id, target_id, ctx, resolved_params
+    )
 
     # Save registration result
     await data_manager.save_result(source_id, "registration", result)

@@ -299,9 +299,13 @@ def ensure_spatial_neighbors(
     import squidpy as sq
 
     if coord_type == "grid":
-        sq.gr.spatial_neighbors(adata, coord_type="grid", n_rings=n_rings)
+        sq.gr.spatial_neighbors(
+            adata, coord_type="grid", n_rings=n_rings, spatial_key=spatial_key
+        )
     else:
-        sq.gr.spatial_neighbors(adata, coord_type="generic", n_neighs=n_neighs)
+        sq.gr.spatial_neighbors(
+            adata, coord_type="generic", n_neighs=n_neighs, spatial_key=spatial_key
+        )
 
     return True
 

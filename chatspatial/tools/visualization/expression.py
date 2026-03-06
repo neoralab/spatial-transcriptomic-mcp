@@ -238,8 +238,9 @@ async def _create_dotplot(
     if params.dotplot_smallest_dot is not None:
         dotplot_kwargs["smallest_dot"] = params.dotplot_smallest_dot
     if params.dotplot_var_groups:
-        dotplot_kwargs["var_group_positions"] = list(params.dotplot_var_groups.keys())
-        dotplot_kwargs["var_group_labels"] = list(params.dotplot_var_groups.keys())
+        # scanpy.pl.dotplot natively accepts dict[str, list[str]] as var_names
+        # to group genes by category — no need for var_group_positions/labels
+        dotplot_kwargs["var_names"] = params.dotplot_var_groups
 
     sc.pl.dotplot(**dotplot_kwargs)
     fig = plt.gcf()
@@ -267,10 +268,16 @@ async def _create_correlation(
     Returns:
         matplotlib Figure with gene correlation clustermap
     """
-    # Get validated genes
+    # Get validated genes (correlation requires actual genes, not obs columns)
     available_genes = await get_validated_features(
-        adata, params, max_features=10, context=context
+        adata, params, max_features=10, context=context, genes_only=True
     )
+
+    if not available_genes:
+        raise ParameterError(
+            "No valid genes found for correlation analysis. "
+            "Ensure feature names match genes in var_names."
+        )
 
     if context:
         await context.info(

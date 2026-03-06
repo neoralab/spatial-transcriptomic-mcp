@@ -157,12 +157,14 @@ def compute_rna_velocity(
 async def _prepare_velovi_data(
     adata: "ad.AnnData",
     ctx: Optional["ToolContext"],
+    params: Optional["RNAVelocityParameters"] = None,
 ) -> "ad.AnnData":
     """Prepare data for VELOVI according to official standards.
 
     Args:
         adata: Input AnnData with spliced/unspliced layers.
         ctx: ToolContext for logging warnings.
+        params: Velocity parameters for preprocessing settings.
 
     Returns:
         Preprocessed AnnData copy ready for VELOVI.
@@ -190,11 +192,25 @@ async def _prepare_velovi_data(
     adata_velovi.layers["Ms"] = adata_velovi.layers["spliced"]
     adata_velovi.layers["Mu"] = adata_velovi.layers["unspliced"]
 
+    # Resolve preprocessing parameters from params (same defaults as scvelo path)
+    min_shared_counts = 30
+    n_top_genes = 2000
+    n_pcs = 30
+    n_neighbors = 30
+    if params is not None:
+        min_shared_counts = params.min_shared_counts
+        n_top_genes = params.n_top_genes
+        n_pcs = params.n_pcs
+        n_neighbors = params.n_neighbors
+
     # scvelo preprocessing
     # enforce=True ensures scvelo recomputes everything even if data was pre-normalized
     try:
         scv.pp.filter_and_normalize(
-            adata_velovi, min_shared_counts=30, n_top_genes=2000, enforce=True
+            adata_velovi,
+            min_shared_counts=min_shared_counts,
+            n_top_genes=n_top_genes,
+            enforce=True,
         )
     except Exception as e:
         if ctx:
@@ -202,7 +218,7 @@ async def _prepare_velovi_data(
 
     # Compute moments
     try:
-        scv.pp.moments(adata_velovi, n_pcs=30, n_neighbors=30)
+        scv.pp.moments(adata_velovi, n_pcs=n_pcs, n_neighbors=n_neighbors)
     except Exception as e:
         if ctx:
             await ctx.warning(f"moments computation warning: {e}")
@@ -242,9 +258,14 @@ def _validate_velovi_data(adata: "ad.AnnData") -> bool:
 
 async def analyze_velocity_with_velovi(
     adata: "ad.AnnData",
+    params: Optional["RNAVelocityParameters"] = None,
+    *,
     n_epochs: int = 1000,
     n_hidden: int = 128,
     n_latent: int = 10,
+    n_layers: int = 1,
+    dropout_rate: float = 0.1,
+    learning_rate: float = 1e-3,
     use_gpu: bool = False,
     ctx: Optional["ToolContext"] = None,
 ) -> dict[str, Any]:
@@ -257,9 +278,13 @@ async def analyze_velocity_with_velovi(
 
     Args:
         adata: AnnData with 'spliced' and 'unspliced' layers.
+        params: Full parameter object (preprocessing params forwarded to data prep).
         n_epochs: Number of training epochs.
         n_hidden: Number of hidden units in neural network layers.
         n_latent: Dimensionality of the latent space.
+        n_layers: Number of hidden layers in encoder/decoder.
+        dropout_rate: Dropout rate for regularization.
+        learning_rate: Learning rate for Adam optimizer.
         use_gpu: If True, use GPU for training.
         ctx: ToolContext for logging.
 
@@ -270,8 +295,8 @@ async def analyze_velocity_with_velovi(
         require("scvi", feature="VELOVI velocity analysis")
         from scvi.external import VELOVI
 
-        # Data preprocessing
-        adata_prepared = await _prepare_velovi_data(adata, ctx)
+        # Data preprocessing (forward params so user's preprocessing settings apply)
+        adata_prepared = await _prepare_velovi_data(adata, ctx, params=params)
 
         # Data validation
         _validate_velovi_data(adata_prepared)
@@ -283,12 +308,22 @@ async def analyze_velocity_with_velovi(
             unspliced_layer="Mu",
         )
 
-        # Model creation
-        velovi_model = VELOVI(adata_prepared, n_hidden=n_hidden, n_latent=n_latent)
+        # Model creation (all architecture params forwarded)
+        velovi_model = VELOVI(
+            adata_prepared,
+            n_hidden=n_hidden,
+            n_latent=n_latent,
+            n_layers=n_layers,
+            dropout_rate=dropout_rate,
+        )
 
         # Model training
         accelerator = get_accelerator(prefer_gpu=use_gpu)
-        velovi_model.train(max_epochs=n_epochs, accelerator=accelerator)
+        velovi_model.train(
+            max_epochs=n_epochs,
+            accelerator=accelerator,
+            lr=learning_rate,
+        )
 
         # Result extraction
         latent_time = velovi_model.get_latent_time(n_samples=25)
@@ -430,6 +465,7 @@ async def analyze_rna_velocity(
                     adata, mode=params.scvelo_mode, params=params
                 )
                 velocity_computed = True
+                adata.uns["velocity_method"] = f"scvelo_{params.scvelo_mode}"
             except Exception as e:
                 raise ProcessingError(
                     f"scVelo RNA velocity analysis failed: {e}"
@@ -441,9 +477,13 @@ async def analyze_rna_velocity(
         try:
             velovi_results = await analyze_velocity_with_velovi(
                 adata,
+                params=params,
                 n_epochs=params.velovi_n_epochs,
                 n_hidden=params.velovi_n_hidden,
                 n_latent=params.velovi_n_latent,
+                n_layers=params.velovi_n_layers,
+                dropout_rate=params.velovi_dropout_rate,
+                learning_rate=params.velovi_learning_rate,
                 use_gpu=params.velovi_use_gpu,
                 ctx=ctx,
             )

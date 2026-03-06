@@ -24,13 +24,30 @@ class DummyCtx:
 
 
 def test_parse_lr_pairs_from_features_contract():
+    # Only ^ is recognized as LR separator
     regular, lr_pairs = viz_feature._parse_lr_pairs_from_features(
-        ["geneA", "CCL5^CCR5", "CD3D_CD3E", "_temp"]
+        ["CCL5^CCR5", "CXCL12^CXCR4"]
     )
-    assert "geneA" in regular
-    assert "_temp" in regular
+    assert regular == []
     assert ("CCL5", "CCR5") in lr_pairs
-    assert ("CD3D", "CD3E") in lr_pairs
+    assert ("CXCL12", "CXCR4") in lr_pairs
+
+
+def test_parse_lr_pairs_underscore_treated_as_gene():
+    """Underscored names like HLA_DRA are regular genes, not LR pairs."""
+    regular, lr_pairs = viz_feature._parse_lr_pairs_from_features(
+        ["HLA_DRA", "CD3D_CD3E", "_temp"]
+    )
+    assert regular == ["HLA_DRA", "CD3D_CD3E", "_temp"]
+    assert lr_pairs == []
+
+
+def test_parse_lr_pairs_mixed_raises():
+    """Mixing LR pairs with regular features raises ParameterError."""
+    with pytest.raises(ParameterError, match="Cannot mix"):
+        viz_feature._parse_lr_pairs_from_features(
+            ["geneA", "CCL5^CCR5"]
+        )
 
 
 @pytest.mark.asyncio

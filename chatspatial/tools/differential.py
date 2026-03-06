@@ -20,7 +20,6 @@ from ..utils.adata_utils import (
 from ..utils.dependency_manager import require
 from ..utils.exceptions import (
     DataError,
-    DataNotFoundError,
     ParameterError,
     ProcessingError,
 )
@@ -197,7 +196,9 @@ async def differential_expression(
         temp_adata = shallow_copy_adata(adata)
     else:
         # Create a temporary copy of the AnnData object with only the two groups
-        temp_adata = shallow_copy_adata(adata[adata.obs[group_key].isin([group1, group2])])
+        temp_adata = shallow_copy_adata(
+            adata[adata.obs[group_key].isin([group1, group2])]
+        )
 
     # Convert dtype after subsetting (4x more memory efficient than copying first)
     if needs_dtype_fix:
@@ -260,16 +261,11 @@ async def differential_expression(
     # Issue: scanpy's logfoldchanges uses mean(log(counts)) which is mathematically incorrect
     # Solution: Calculate log(mean(counts1) / mean(counts2)) from raw data
 
-    # Use get_raw_data_source (single source of truth) to check for raw count data
+    # Use get_raw_data_source (single source of truth) for raw count data.
+    # Accept any valid source (adata.raw, layers["counts"], or adata.X).
     raw_result = get_raw_data_source(adata, prefer_complete_genes=True)
-    if raw_result.source != "raw":
-        raise DataNotFoundError(
-            f"Raw count data (adata.raw) required for fold change calculation. "
-            f"Found: {raw_result.source}. Run preprocess_data() first to preserve raw counts."
-        )
-
-    # Get raw count data (source is "raw", so adata.raw is valid)
-    raw_adata = adata.raw
+    raw_X = raw_result.X
+    raw_var_names = raw_result.var_names
     log2fc_values = []
 
     # Create masks for the two groups
@@ -281,15 +277,13 @@ async def differential_expression(
         group2_mask = adata.obs[group_key] == group2
 
     # CRITICAL: Normalize by library size to avoid composition bias
-    # Library size = total UMI counts per spot
-    # Use np.asarray + ravel for efficient conversion (avoids extra copy)
-    lib_sizes = np.asarray(raw_adata.X.sum(axis=1)).ravel()
+    lib_sizes = np.asarray(raw_X.sum(axis=1)).ravel()
 
     median_lib_size = float(np.median(lib_sizes))
 
     # Calculate fold change for all top genes (batch + vectorized)
     # Pre-filter genes that exist in raw data using set for O(1) lookup
-    var_names_set = set(raw_adata.var_names)
+    var_names_set = set(raw_var_names)
     genes_in_raw = [g for g in top_genes if g in var_names_set]
     genes_missing = [g for g in top_genes if g not in var_names_set]
 
@@ -302,7 +296,8 @@ async def differential_expression(
 
     if genes_in_raw:
         # Batch extract expression matrix for all genes at once
-        gene_expr_matrix = to_dense(raw_adata[:, genes_in_raw].X)  # cells × genes
+        gene_indices = [list(raw_var_names).index(g) for g in genes_in_raw]
+        gene_expr_matrix = to_dense(raw_X[:, gene_indices])  # cells × genes
 
         # Vectorized normalization by library size
         lib_size_factors = median_lib_size / lib_sizes

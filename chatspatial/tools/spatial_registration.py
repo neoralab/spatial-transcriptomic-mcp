@@ -399,7 +399,7 @@ async def register_spatial_slices_mcp(
     source_id: str,
     target_id: str,
     ctx: "ToolContext",
-    method: str = "paste",
+    params: Optional[RegistrationParameters] = None,
 ) -> dict:
     """
     MCP wrapper for spatial registration.
@@ -408,26 +408,23 @@ async def register_spatial_slices_mcp(
         source_id: Source dataset ID
         target_id: Target dataset ID
         ctx: Tool context for data access
-        method: Registration method ('paste' or 'stalign')
+        params: Registration parameters (method, alignment settings, etc.)
 
     Returns:
         Registration result dictionary
     """
+    if params is None:
+        params = RegistrationParameters()
+
     # Check dependencies
-    if method == "paste":
+    if params.method == "paste":
         require("paste", ctx, feature="PASTE spatial registration")
-    elif method == "stalign":
+    elif params.method == "stalign":
         require("STalign", ctx, feature="STalign spatial registration")
 
     # Get data
     source_adata = await ctx.get_adata(source_id)
     target_adata = await ctx.get_adata(target_id)
-
-    # Create parameters - cast method to Literal type
-    from typing import Literal, cast
-
-    method_literal = cast(Literal["paste", "stalign"], method)
-    params = RegistrationParameters(method=method_literal)
 
     try:
         registered = register_slices([source_adata, target_adata], params)
@@ -443,6 +440,7 @@ async def register_spatial_slices_mcp(
             ]
 
         # Store metadata and export results for both datasets
+        method = params.method
         results_keys: dict[str, list[str]] = {"obsm": ["spatial_registered"]}
         parameters = {"method": method, "target_id": target_id}
         statistics = {
