@@ -25,7 +25,8 @@ unified 'genes' parameter for consistent gene selection across methods.
 from __future__ import annotations
 
 import warnings
-from typing import TYPE_CHECKING, Any, Optional
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 import anndata as ad
 import numpy as np
@@ -58,119 +59,23 @@ from ..utils.exceptions import (
 from ..utils.results_export import export_analysis_result
 
 # ============================================================================
-# ANALYSIS REGISTRY - Single Source of Truth
+# ANALYSIS REGISTRY TYPES
 # ============================================================================
-#
-# Each analysis type is registered with:
-#   - handler: Function name to call (looked up via globals())
-#   - signature: Parameter pattern for the handler function
-#       * "gene": (adata, params, ctx) - gene-based analyses
-#       * "cluster": (adata, cluster_key, ctx) - cluster-based analyses
-#       * "hybrid": (adata, cluster_key, params, ctx) - both needed
-#   - metadata_keys: Keys stored in adata after analysis (for reproducibility)
 
-_ANALYSIS_REGISTRY: dict[str, dict[str, Any]] = {
-    # Gene-based analyses (no cluster_key required)
-    "moran": {
-        "handler": "_analyze_morans_i",
-        "signature": "gene",
-        "metadata_keys": {"uns": ["moranI"]},  # squidpy stores as moranI
-    },
-    "local_moran": {
-        "handler": "_analyze_local_moran",
-        "signature": "gene",
-        "metadata_keys": {"obs": []},  # Dynamic: {gene}_local_moran
-    },
-    "geary": {
-        "handler": "_analyze_gearys_c",
-        "signature": "gene",
-        "metadata_keys": {"uns": ["gearyC"]},  # squidpy stores as gearyC
-    },
-    "getis_ord": {
-        "handler": "_analyze_getis_ord",
-        "signature": "gene",
-        "metadata_keys": {"obs": []},  # Dynamic: {gene}_getis_ord_z/p
-    },
-    "bivariate_moran": {
-        "handler": "_analyze_bivariate_moran",
-        "signature": "gene",
-        "metadata_keys": {"uns": ["bivariate_moran"]},
-    },
-    # Cluster-based analyses (cluster_key only, no params needed)
-    "neighborhood": {
-        "handler": "_analyze_neighborhood_enrichment",
-        "signature": "cluster",
-        "metadata_keys": {"uns": ["neighborhood"]},
-    },
-    "co_occurrence": {
-        "handler": "_analyze_co_occurrence",
-        "signature": "hybrid",  # Changed to hybrid to support interval parameter
-        "metadata_keys": {"uns": ["co_occurrence"]},
-    },
-    "ripley": {
-        "handler": "_analyze_ripleys_k",
-        "signature": "cluster",
-        "metadata_keys": {"uns": ["ripley"]},
-    },
-    "centrality": {
-        "handler": "_analyze_centrality",
-        "signature": "cluster",
-        "metadata_keys": {"uns": ["centrality_scores"]},
-    },
-    # Hybrid analyses (both cluster_key and params needed)
-    "join_count": {
-        "handler": "_analyze_join_count",
-        "signature": "hybrid",
-        "metadata_keys": {"uns": ["join_count"]},
-    },
-    "local_join_count": {
-        "handler": "_analyze_local_join_count",
-        "signature": "hybrid",
-        "metadata_keys": {"obs": [], "uns": ["local_join_count"]},  # obs is dynamic
-    },
-    "network_properties": {
-        "handler": "_analyze_network_properties",
-        "signature": "hybrid",
-        "metadata_keys": {"uns": ["network_properties"]},
-    },
-    "spatial_centrality": {
-        "handler": "_analyze_spatial_centrality",
-        "signature": "hybrid",
-        # Stores three centrality measures in obs
-        "metadata_keys": {
-            "obs": [
-                "degree_centrality",
-                "closeness_centrality",
-                "betweenness_centrality",
-            ]
-        },
-    },
-}
-
-# Derived constants (computed once at module load)
-_CLUSTER_REQUIRED_ANALYSES = frozenset(
-    name for name, cfg in _ANALYSIS_REGISTRY.items() if cfg["signature"] != "gene"
-)
+# Unified handler signature: all handlers take (adata, params, ctx)
+_AnalysisHandler = Callable[
+    ["ad.AnnData", SpatialStatisticsParameters, "ToolContext"],
+    dict[str, Any],
+]
 
 
-def _dispatch_analysis(
-    analysis_type: str,
-    adata: "ad.AnnData",
-    params: SpatialStatisticsParameters,
-    cluster_key: Optional[str],
-    ctx: "ToolContext",
-) -> dict[str, Any]:
-    """Dispatch to appropriate analysis function based on registry configuration."""
-    config = _ANALYSIS_REGISTRY[analysis_type]
-    handler = globals()[config["handler"]]
-    signature = config["signature"]
+@dataclass(frozen=True, slots=True)
+class _AnalysisConfig:
+    """Configuration for a registered spatial analysis type."""
 
-    if signature == "gene":
-        return handler(adata, params, ctx)
-    elif signature == "cluster":
-        return handler(adata, cluster_key, ctx)
-    else:  # hybrid
-        return handler(adata, cluster_key, params, ctx)
+    handler: _AnalysisHandler
+    needs_cluster: bool
+    metadata_keys: dict[str, list[str]]
 
 
 def _build_results_keys(
@@ -184,7 +89,7 @@ def _build_results_keys(
     if analysis_type not in _ANALYSIS_REGISTRY:
         return base
 
-    template = _ANALYSIS_REGISTRY[analysis_type]["metadata_keys"]
+    template = _ANALYSIS_REGISTRY[analysis_type].metadata_keys
 
     # Static keys from registry
     for key_type, keys in template.items():
@@ -271,21 +176,18 @@ async def analyze_spatial_statistics(
         require_spatial_coords(adata)
 
         # Validate cluster_key for analyses that require it (derived from registry)
-        cluster_key: str | None = None
-        if params.analysis_type in _CLUSTER_REQUIRED_ANALYSES:
+        if _ANALYSIS_REGISTRY[params.analysis_type].needs_cluster:
             if params.cluster_key is None:
                 raise ParameterError(
                     f"cluster_key is required for {params.analysis_type} analysis"
                 )
             validate_obs_column(adata, params.cluster_key, "Cluster key")
             ensure_categorical(adata, params.cluster_key)
-            cluster_key = params.cluster_key
 
         # Ensure spatial neighbors and dispatch to analysis
         ensure_spatial_neighbors(adata, n_neighs=params.n_neighbors)
-        result = _dispatch_analysis(
-            params.analysis_type, adata, params, cluster_key, ctx
-        )
+        config = _ANALYSIS_REGISTRY[params.analysis_type]
+        result = config.handler(adata, params, ctx)
 
         # COW FIX: No need to update data_store - changes already reflected via direct reference
         # All modifications to adata.obs/uns/obsp are in-place and preserved
@@ -308,15 +210,15 @@ async def analyze_spatial_statistics(
         # Store scientific metadata for reproducibility
         # Build results keys from registry (single source of truth)
         results_keys_dict = _build_results_keys(
-            params.analysis_type, params.genes, cluster_key
+            params.analysis_type, params.genes, params.cluster_key
         )
 
         # Prepare parameters dict (heterogeneous value types)
         parameters_dict: dict[str, int | str | list[str]] = {
             "n_neighbors": params.n_neighbors,
         }
-        if cluster_key:
-            parameters_dict["cluster_key"] = cluster_key
+        if params.cluster_key:
+            parameters_dict["cluster_key"] = params.cluster_key
         if params.genes:
             parameters_dict["genes"] = params.genes
         # Add n_perms based on analysis type
@@ -676,10 +578,11 @@ def _analyze_gearys_c(
 
 def _analyze_neighborhood_enrichment(
     adata: ad.AnnData,
-    cluster_key: str,
+    params: SpatialStatisticsParameters,
     ctx: "ToolContext",
 ) -> dict[str, Any]:
     """Compute neighborhood enrichment analysis."""
+    cluster_key = params.cluster_key
     sq.gr.nhood_enrichment(adata, cluster_key=cluster_key)
 
     analysis_key = f"{cluster_key}_nhood_enrichment"
@@ -700,21 +603,20 @@ def _analyze_neighborhood_enrichment(
 
 def _analyze_co_occurrence(
     adata: ad.AnnData,
-    cluster_key: str,
-    params: "SpatialStatisticsParameters",
+    params: SpatialStatisticsParameters,
     ctx: "ToolContext",
 ) -> dict[str, Any]:
     """Compute co-occurrence analysis.
 
     Args:
         adata: AnnData object with spatial coordinates
-        cluster_key: Key in adata.obs for cluster labels
-        params: Parameters including co_occurrence_interval
+        params: Parameters including cluster_key and co_occurrence_interval
         ctx: Tool context for logging
 
     Returns:
         Analysis results with n_clusters and analysis_key
     """
+    cluster_key = params.cluster_key
     # Get interval from params (default: 50)
     interval = params.co_occurrence_interval or 50
 
@@ -747,10 +649,11 @@ def _analyze_co_occurrence(
 
 def _analyze_ripleys_k(
     adata: ad.AnnData,
-    cluster_key: str,
+    params: SpatialStatisticsParameters,
     ctx: "ToolContext",
 ) -> dict[str, Any]:
     """Compute Ripley's K function."""
+    cluster_key = params.cluster_key
     try:
         sq.gr.ripley(
             adata,
@@ -928,10 +831,11 @@ def _analyze_getis_ord(
 
 def _analyze_centrality(
     adata: ad.AnnData,
-    cluster_key: str,
+    params: SpatialStatisticsParameters,
     ctx: "ToolContext",
 ) -> dict[str, Any]:
     """Compute centrality scores."""
+    cluster_key = params.cluster_key
     sq.gr.centrality_scores(adata, cluster_key=cluster_key)
 
     analysis_key = f"{cluster_key}_centrality_scores"
@@ -1051,7 +955,6 @@ def _analyze_bivariate_moran(
 
 def _analyze_join_count(
     adata: ad.AnnData,
-    cluster_key: str,
     params: SpatialStatisticsParameters,
     ctx: "ToolContext",
 ) -> dict[str, Any]:
@@ -1071,9 +974,8 @@ def _analyze_join_count(
 
     Args:
         adata: Annotated data object with spatial coordinates in .obsm['spatial'].
-        cluster_key: Column in adata.obs containing the categorical variable
-            (must have exactly 2 categories).
-        params: Analysis parameters including n_neighbors.
+        params: Analysis parameters including cluster_key (must have exactly 2
+            categories) and n_neighbors.
         ctx: ToolContext for logging and data access.
 
     Returns:
@@ -1094,6 +996,7 @@ def _analyze_join_count(
     See Also:
         _analyze_local_join_count: For multi-category data (>2 categories).
     """
+    cluster_key = params.cluster_key
     # Check for required dependencies
     require("esda")
     require("libpysal")
@@ -1136,7 +1039,6 @@ def _analyze_join_count(
 
 def _analyze_local_join_count(
     adata: ad.AnnData,
-    cluster_key: str,
     params: SpatialStatisticsParameters,
     ctx: "ToolContext",
 ) -> dict[str, Any]:
@@ -1163,9 +1065,8 @@ def _analyze_local_join_count(
 
     Args:
         adata: Annotated data object with spatial coordinates in .obsm['spatial'].
-        cluster_key: Column in adata.obs containing the categorical variable
-            (can have any number of categories).
-        params: Analysis parameters including n_neighbors.
+        params: Analysis parameters including cluster_key (can have any number of
+            categories) and n_neighbors.
         ctx: ToolContext for logging and data access.
 
     Returns:
@@ -1202,11 +1103,12 @@ def _analyze_local_join_count(
     Example:
         For a dataset with 7 cell type categories::
 
-            result = await _analyze_local_join_count(adata, 'leiden', params, ctx)
+            result = await _analyze_local_join_count(adata, params, ctx)
             # Check which cell types show significant clustering
             for cat, stats in result['per_category_stats'].items():
                 print(f"{cat}: {stats['n_hotspots']} significant hotspots")
     """
+    cluster_key = params.cluster_key
     # Check for required dependencies (esda >= 2.4.0 required for Join_Counts_Local)
     require("esda")
     require("libpysal")
@@ -1285,15 +1187,10 @@ def _analyze_local_join_count(
 
 def _analyze_network_properties(
     adata: ad.AnnData,
-    cluster_key: str,
     params: SpatialStatisticsParameters,
     ctx: "ToolContext",
 ) -> dict[str, Any]:
-    """
-    Analyze network properties of spatial graph.
-
-    Migrated from spatial_statistics.py
-    """
+    """Analyze network properties of spatial graph."""
     # Check for required dependencies
     require("networkx")
 
@@ -1359,15 +1256,11 @@ def _analyze_network_properties(
 
 def _analyze_spatial_centrality(
     adata: ad.AnnData,
-    cluster_key: str,
     params: SpatialStatisticsParameters,
     ctx: "ToolContext",
 ) -> dict[str, Any]:
-    """
-    Compute various centrality measures for spatial network.
-
-    Migrated from spatial_statistics.py
-    """
+    """Compute various centrality measures for spatial network."""
+    cluster_key = params.cluster_key
     # Check for required dependencies
     require("networkx")
 
@@ -1659,3 +1552,95 @@ def _analyze_local_moran(
 
     except Exception as e:
         raise ProcessingError(f"Local Moran's I analysis failed: {e}") from e
+
+
+# ============================================================================
+# ANALYSIS REGISTRY - Single Source of Truth
+# ============================================================================
+#
+# Each analysis type maps to an _AnalysisConfig with:
+#   - handler: Direct function reference (no string lookup)
+#   - needs_cluster: Whether cluster_key is required
+#   - metadata_keys: Keys stored in adata after analysis
+
+_ANALYSIS_REGISTRY: dict[str, _AnalysisConfig] = {
+    # Gene-based analyses (no cluster_key required)
+    "moran": _AnalysisConfig(
+        handler=_analyze_morans_i,
+        needs_cluster=False,
+        metadata_keys={"uns": ["moranI"]},
+    ),
+    "local_moran": _AnalysisConfig(
+        handler=_analyze_local_moran,
+        needs_cluster=False,
+        metadata_keys={"obs": []},  # Dynamic: {gene}_local_moran
+    ),
+    "geary": _AnalysisConfig(
+        handler=_analyze_gearys_c,
+        needs_cluster=False,
+        metadata_keys={"uns": ["gearyC"]},
+    ),
+    "getis_ord": _AnalysisConfig(
+        handler=_analyze_getis_ord,
+        needs_cluster=False,
+        metadata_keys={"obs": []},  # Dynamic: {gene}_getis_ord_z/p
+    ),
+    "bivariate_moran": _AnalysisConfig(
+        handler=_analyze_bivariate_moran,
+        needs_cluster=False,
+        metadata_keys={"uns": ["bivariate_moran"]},
+    ),
+    # Cluster-based analyses
+    "neighborhood": _AnalysisConfig(
+        handler=_analyze_neighborhood_enrichment,
+        needs_cluster=True,
+        metadata_keys={"uns": ["neighborhood"]},
+    ),
+    "co_occurrence": _AnalysisConfig(
+        handler=_analyze_co_occurrence,
+        needs_cluster=True,
+        metadata_keys={"uns": ["co_occurrence"]},
+    ),
+    "ripley": _AnalysisConfig(
+        handler=_analyze_ripleys_k,
+        needs_cluster=True,
+        metadata_keys={"uns": ["ripley"]},
+    ),
+    "centrality": _AnalysisConfig(
+        handler=_analyze_centrality,
+        needs_cluster=True,
+        metadata_keys={"uns": ["centrality_scores"]},
+    ),
+    # Hybrid analyses (cluster + params)
+    "join_count": _AnalysisConfig(
+        handler=_analyze_join_count,
+        needs_cluster=True,
+        metadata_keys={"uns": ["join_count"]},
+    ),
+    "local_join_count": _AnalysisConfig(
+        handler=_analyze_local_join_count,
+        needs_cluster=True,
+        metadata_keys={"obs": [], "uns": ["local_join_count"]},
+    ),
+    "network_properties": _AnalysisConfig(
+        handler=_analyze_network_properties,
+        needs_cluster=True,
+        metadata_keys={"uns": ["network_properties"]},
+    ),
+    "spatial_centrality": _AnalysisConfig(
+        handler=_analyze_spatial_centrality,
+        needs_cluster=True,
+        metadata_keys={
+            "obs": [
+                "degree_centrality",
+                "closeness_centrality",
+                "betweenness_centrality",
+            ]
+        },
+    ),
+}
+
+# Derived constant (computed once at module load)
+_CLUSTER_REQUIRED_ANALYSES = frozenset(
+    name for name, cfg in _ANALYSIS_REGISTRY.items() if cfg.needs_cluster
+)
