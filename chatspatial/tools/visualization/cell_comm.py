@@ -754,9 +754,13 @@ def _create_unified_tileplot(
             f"No {data.method} results found. Run analyze_cell_communication() first."
         )
 
-    # Determine columns for visualization
+    # Determine columns for visualization.
+    # Rank columns (magnitude_rank, specificity_rank): lower = stronger → ascending
+    # Expression columns (lr_means): higher = stronger → descending
     fill_col = "magnitude_rank" if "magnitude_rank" in df.columns else "lr_means"
     label_col = "lr_means" if "lr_means" in df.columns else fill_col
+    _rank_columns = {"magnitude_rank", "specificity_rank"}
+    ascending = fill_col in _rank_columns
 
     if fill_col not in df.columns:
         raise DataNotFoundError("No suitable columns for tileplot visualization")
@@ -771,7 +775,7 @@ def _create_unified_tileplot(
             label=label_col,
             top_n=n_top,
             orderby=fill_col,
-            orderby_ascending=True,
+            orderby_ascending=ascending,
             cmap=params.colormap or "viridis",
             figure_size=figsize,
             return_fig=True,
@@ -795,8 +799,11 @@ def _create_fallback_tileplot(
 
     df = data.results
 
-    # Determine value column
+    # Determine value column.
+    # Rank columns: lower = stronger → nsmallest selects top interactions
+    # Expression columns: higher = stronger → nlargest selects top interactions
     value_col = None
+    _rank_columns = {"magnitude_rank", "specificity_rank"}
     for col in ["magnitude_rank", "lr_means"]:
         if col in df.columns:
             value_col = col
@@ -810,7 +817,10 @@ def _create_fallback_tileplot(
     df["cell_pair"] = df["source"] + " → " + df["target"]
 
     n_top = params.plot_top_pairs or 20
-    top_df = df.nsmallest(n_top, value_col)
+    if value_col in _rank_columns:
+        top_df = df.nsmallest(n_top, value_col)
+    else:
+        top_df = df.nlargest(n_top, value_col)
 
     pivot = top_df.pivot_table(
         index="lr_label", columns="cell_pair", values=value_col, aggfunc="mean"
