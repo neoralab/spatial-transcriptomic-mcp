@@ -834,92 +834,115 @@ async def _analyze_communication_cellphonedb(
             if params.cellphonedb_debug_seed is not None
             else 42
         )
+        # Isolate CellPhoneDB's RNG from global state
+        _rng_state = np.random.get_state()
         np.random.seed(debug_seed)
 
         # Run CellPhoneDB statistical analysis
-        with tempfile.TemporaryDirectory() as temp_dir:
-            # Save data to temporary files
-            counts_file = os.path.join(temp_dir, "counts.txt")
-            meta_file = os.path.join(temp_dir, "meta.txt")
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Save data to temporary files
+                counts_file = os.path.join(temp_dir, "counts.txt")
+                meta_file = os.path.join(temp_dir, "meta.txt")
 
-            # Direct file writing: Stream sparse matrix to CSV without creating DataFrame
-            # Memory-efficient approach: write gene-by-gene instead of toarray()
-            with open(counts_file, "w", newline="") as f:
-                writer = csv.writer(f, delimiter="\t")
+                # Direct file writing: Stream sparse matrix to CSV without creating DataFrame
+                # Memory-efficient approach: write gene-by-gene instead of toarray()
+                with open(counts_file, "w", newline="") as f:
+                    writer = csv.writer(f, delimiter="\t")
 
-                # Write header: empty first column + cell names
-                header = [""] + list(adata_for_analysis.obs_names)
-                writer.writerow(header)
+                    # Write header: empty first column + cell names
+                    header = [""] + list(adata_for_analysis.obs_names)
+                    writer.writerow(header)
 
-                # Convert to CSC for efficient column access (genes)
-                if is_sparse:
-                    X_csc = adata_for_analysis.X.tocsc()
-                else:
-                    X_csc = adata_for_analysis.X
+                    # Convert to CSC for efficient column access (genes)
+                    if is_sparse:
+                        X_csc = adata_for_analysis.X.tocsc()
+                    else:
+                        X_csc = adata_for_analysis.X
 
-                # Write gene-by-gene (memory constant)
-                for i, gene_name in enumerate(adata_for_analysis.var_names):
-                    gene_expression = to_dense(X_csc[:, i]).flatten()
-                    writer.writerow([gene_name] + list(gene_expression))
+                    # Write gene-by-gene (memory constant)
+                    for i, gene_name in enumerate(
+                        adata_for_analysis.var_names
+                    ):
+                        gene_expression = to_dense(
+                            X_csc[:, i]
+                        ).flatten()
+                        writer.writerow(
+                            [gene_name] + list(gene_expression)
+                        )
 
-            meta_df.to_csv(meta_file, sep="\t", index=False)
+                meta_df.to_csv(meta_file, sep="\t", index=False)
 
-            try:
-                db_path = _ensure_cellphonedb_database(temp_dir, ctx)
-            except Exception as db_error:
-                raise DependencyError(
-                    f"CellPhoneDB database setup failed: {db_error}"
-                ) from db_error
+                try:
+                    db_path = _ensure_cellphonedb_database(
+                        temp_dir, ctx
+                    )
+                except Exception as db_error:
+                    raise DependencyError(
+                        f"CellPhoneDB database setup failed: "
+                        f"{db_error}"
+                    ) from db_error
 
-            # Run the analysis using CellPhoneDB v5 API with correct parameters
-            try:
-                # STRICT: CellPhoneDB v5 ONLY - no backward compatibility for older versions
-                result = cpdb_statistical_analysis_method.call(
-                    cpdb_file_path=db_path,  # Fixed: Use actual database path
-                    meta_file_path=meta_file,
-                    counts_file_path=counts_file,
-                    counts_data="hgnc_symbol",  # Improved: Use recommended gene identifier
-                    threshold=params.cellphonedb_threshold,
-                    result_precision=params.cellphonedb_result_precision,
-                    pvalue=params.cellphonedb_pvalue,
-                    iterations=params.cellphonedb_iterations,
-                    debug_seed=debug_seed,
-                    output_path=temp_dir,
-                    microenvs_file_path=microenvs_file,
-                    score_interactions=False,  # Disabled: CellPhoneDB v5 scoring has bugs
-                )
-            except KeyError as key_error:
-                raise ProcessingError(
-                    f"CellPhoneDB found no L-R interactions. "
-                    f"CellPhoneDB is human-only; use method='liana' for mouse data. "
-                    f"Error: {key_error}"
-                ) from key_error
-            except Exception as api_error:
-                raise ProcessingError(
-                    f"CellPhoneDB analysis failed: {str(api_error)}. "
-                    f"Consider using method='liana' as alternative."
-                ) from api_error
+                # Run the analysis using CellPhoneDB v5 API
+                try:
+                    # STRICT: CellPhoneDB v5 ONLY
+                    result = cpdb_statistical_analysis_method.call(
+                        cpdb_file_path=db_path,
+                        meta_file_path=meta_file,
+                        counts_file_path=counts_file,
+                        counts_data="hgnc_symbol",
+                        threshold=params.cellphonedb_threshold,
+                        result_precision=(
+                            params.cellphonedb_result_precision
+                        ),
+                        pvalue=params.cellphonedb_pvalue,
+                        iterations=params.cellphonedb_iterations,
+                        debug_seed=debug_seed,
+                        output_path=temp_dir,
+                        microenvs_file_path=microenvs_file,
+                        score_interactions=False,
+                    )
+                except KeyError as key_error:
+                    raise ProcessingError(
+                        f"CellPhoneDB found no L-R interactions. "
+                        f"CellPhoneDB is human-only; use "
+                        f"method='liana' for mouse data. "
+                        f"Error: {key_error}"
+                    ) from key_error
+                except Exception as api_error:
+                    raise ProcessingError(
+                        f"CellPhoneDB analysis failed: "
+                        f"{str(api_error)}. "
+                        f"Consider using method='liana' "
+                        f"as alternative."
+                    ) from api_error
 
-            # Validate CellPhoneDB v5 format
-            if not isinstance(result, dict):
-                raise ProcessingError(
-                    f"CellPhoneDB returned unexpected format: {type(result).__name__}. "
-                    f"Expected dict from CellPhoneDB v5. Check installation: pip install 'cellphonedb>=5.0.0'"
-                )
+                # Validate CellPhoneDB v5 format
+                if not isinstance(result, dict):
+                    raise ProcessingError(
+                        f"CellPhoneDB returned unexpected format: "
+                        f"{type(result).__name__}. "
+                        f"Expected dict from CellPhoneDB v5. "
+                        f"Check installation: "
+                        f"pip install 'cellphonedb>=5.0.0'"
+                    )
 
-            # Check for empty results (no interactions found)
-            if not result or "significant_means" not in result:
-                raise DataNotFoundError(
-                    "CellPhoneDB found no L-R interactions. "
-                    "CellPhoneDB is human-only; use method='liana' for mouse data."
-                )
+                # Check for empty results (no interactions found)
+                if not result or "significant_means" not in result:
+                    raise DataNotFoundError(
+                        "CellPhoneDB found no L-R interactions. "
+                        "CellPhoneDB is human-only; use "
+                        "method='liana' for mouse data."
+                    )
 
-            # Extract results from CellPhoneDB v5 dictionary format
-            deconvoluted = result.get("deconvoluted")
-            means = result.get("means")
-            pvalues = result.get("pvalues")
-            significant_means = result.get("significant_means")
-            # Results will be stored in unified CCCStorage.method_data
+                # Extract results from CellPhoneDB v5 dict format
+                deconvoluted = result.get("deconvoluted")
+                means = result.get("means")
+                pvalues = result.get("pvalues")
+                significant_means = result.get("significant_means")
+                # Results stored in unified CCCStorage.method_data
+        finally:
+            np.random.set_state(_rng_state)
 
         # Calculate statistics
         n_lr_pairs = (

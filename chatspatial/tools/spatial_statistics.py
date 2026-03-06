@@ -546,7 +546,19 @@ def _analyze_morans_i(
         from statsmodels.stats.multitest import multipletests
 
         raw_pvals = results_df["pval_norm"].values
-        _, fdr_pvals, _, _ = multipletests(raw_pvals, method="fdr_bh")
+        nan_mask = np.isnan(raw_pvals)
+        if nan_mask.all():
+            fdr_pvals = np.full_like(raw_pvals, np.nan)
+        elif nan_mask.any():
+            fdr_pvals = np.full_like(raw_pvals, np.nan)
+            valid = ~nan_mask
+            _, fdr_pvals[valid], _, _ = multipletests(
+                raw_pvals[valid], method="fdr_bh"
+            )
+        else:
+            _, fdr_pvals, _, _ = multipletests(
+                raw_pvals, method="fdr_bh"
+            )
         results_df["pval_norm_fdr"] = fdr_pvals
         adata.uns[moran_key] = results_df
 

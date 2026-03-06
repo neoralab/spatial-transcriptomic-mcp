@@ -435,6 +435,7 @@ def perform_gsea(
     permutation_num: int = 1000,
     min_size: int = 10,
     max_size: int = 500,
+    pvalue_cutoff: float = 0.25,
     species: Optional[str] = None,
     database: Optional[str] = None,
     ctx: Optional["ToolContext"] = None,
@@ -643,7 +644,7 @@ def perform_gsea(
             statistics={
                 "n_gene_sets": len(gene_sets),
                 "n_significant": len(
-                    results_df[results_df["FDR q-val"] < _GSEA_FDR_THRESHOLD]
+                    results_df[results_df["FDR q-val"] < pvalue_cutoff]
                 ),
             },
             species=species,
@@ -666,14 +667,15 @@ def perform_gsea(
             enrichment_scores,
             pvalues,
             adjusted_pvalues,
-            method="gsea",  # Method-based FDR: 0.25 for GSEA
+            method="gsea",
+            fdr_threshold=pvalue_cutoff,
         )
 
         return EnrichmentResult(
             method="gsea",
             n_gene_sets=len(gene_sets),
             n_significant=len(
-                results_df[results_df["FDR q-val"] < _GSEA_FDR_THRESHOLD]
+                results_df[results_df["FDR q-val"] < pvalue_cutoff]
             ),
             enrichment_scores=filtered_scores,
             pvalues=filtered_pvals,
@@ -1275,7 +1277,8 @@ def perform_enrichr(
             enrichment_scores,
             pvalues,
             adjusted_pvalues,
-            method="enrichr",  # Method-based FDR: 0.05 for Enrichr
+            method="enrichr",
+            fdr_threshold=pvalue_cutoff,
         )
 
         return EnrichmentResult(
@@ -1911,6 +1914,7 @@ async def analyze_enrichment(
             permutation_num=params.n_permutations,
             min_size=params.min_genes,
             max_size=params.max_genes,
+            pvalue_cutoff=params.pvalue_cutoff,
             species=params.species,
             database=params.gene_set_database,
             ctx=ctx,

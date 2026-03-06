@@ -979,6 +979,25 @@ class TrajectoryParameters(BaseModel):
         default=500, gt=0, description="Number of waypoints for Palantir."
     )
 
+    @model_validator(mode="after")
+    def _validate_kernel_weights(self) -> "TrajectoryParameters":
+        vk, ck = self.cellrank_kernel_weights
+        if vk < 0 or ck < 0:
+            raise ValueError(
+                f"cellrank_kernel_weights must be non-negative, "
+                f"got ({vk}, {ck})"
+            )
+        total = vk + ck
+        if total <= 0:
+            raise ValueError(
+                f"cellrank_kernel_weights must sum to > 0, "
+                f"got ({vk}, {ck})"
+            )
+        # Normalize to sum to 1 if they don't already
+        if abs(total - 1.0) > 1e-6:
+            self.cellrank_kernel_weights = (vk / total, ck / total)
+        return self
+
     # Fallback control
     # Removed: allow_fallback_to_dpt - No longer doing automatic fallbacks
     # LLMs should explicitly choose which method to use
