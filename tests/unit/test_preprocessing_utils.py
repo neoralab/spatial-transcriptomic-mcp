@@ -978,13 +978,10 @@ async def test_preprocess_data_scvi_rejects_negative_values(monkeypatch: pytest.
         "scvi",
         SimpleNamespace(model=SimpleNamespace(SCVI=object)),
     )
-    monkeypatch.setattr(
-        preprocessing_mod,
-        "sample_expression_values",
-        lambda _adata: np.array([1.0, -0.5, 2.0]),
-    )
 
+    # Inject negative values so counts layer (created from X) triggers rejection
     adata = _make_adata(n_obs=12, n_vars=120)
+    adata.X[0, 0] = -0.5
     ctx = DummyCtx(adata)
     with pytest.raises(DataError, match="requires non-negative count data"):
         await preprocess_data(

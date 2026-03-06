@@ -73,12 +73,8 @@ def _calculate_sparse_gene_stats(X) -> tuple[np.ndarray, np.ndarray]:
         n_expressed = np.asarray((X > 0).sum(axis=0)).flatten()
 
     # Guard against NaN/Inf values from degenerate inputs
-    gene_totals = np.nan_to_num(
-        gene_totals, nan=0.0, posinf=0.0, neginf=0.0
-    )
-    n_expressed = np.nan_to_num(
-        n_expressed, nan=0.0, posinf=0.0, neginf=0.0
-    )
+    gene_totals = np.nan_to_num(gene_totals, nan=0.0, posinf=0.0, neginf=0.0)
+    n_expressed = np.nan_to_num(n_expressed, nan=0.0, posinf=0.0, neginf=0.0)
 
     return gene_totals, n_expressed
 
@@ -249,9 +245,12 @@ async def _identify_spatial_genes_spatialde(
 
     if params.n_top_genes is not None and params.n_top_genes < len(selected_var_names):
         if "highly_variable" in var_df.columns:
-            # Prioritize HVGs if available
-            hvg_mask = var_df.loc[selected_var_names, "highly_variable"]
-            hvg_genes = selected_var_names[hvg_mask]
+            # Prioritize HVGs if available.
+            # selected_var_names may include raw-only genes not in adata.var;
+            # restrict lookup to genes present in var_df to avoid KeyError.
+            in_var = selected_var_names.isin(var_df.index)
+            hvg_mask = var_df.loc[selected_var_names[in_var], "highly_variable"]
+            hvg_genes = selected_var_names[in_var][hvg_mask]
 
             if len(hvg_genes) >= params.n_top_genes:
                 # Use HVGs
@@ -424,10 +423,9 @@ async def _identify_spatial_genes_flashs(
 
     adata_var_names = np.asarray(adata.var_names.astype(str))
     input_gene_names = np.asarray(gene_names, dtype=str)
-    is_positionally_aligned = (
-        len(input_gene_names) == len(adata_var_names)
-        and np.array_equal(input_gene_names, adata_var_names)
-    )
+    is_positionally_aligned = len(input_gene_names) == len(
+        adata_var_names
+    ) and np.array_equal(input_gene_names, adata_var_names)
 
     def _assign_flashs_column(
         column_name: str,
@@ -450,9 +448,7 @@ async def _identify_spatial_genes_flashs(
 
     _assign_flashs_column("flashs_pval", flashs_result.pvalues, fill_value=1.0)
     _assign_flashs_column("flashs_qval", flashs_result.qvalues, fill_value=1.0)
-    _assign_flashs_column(
-        "flashs_statistic", flashs_result.statistics, fill_value=0.0
-    )
+    _assign_flashs_column("flashs_statistic", flashs_result.statistics, fill_value=0.0)
     _assign_flashs_column(
         "flashs_effect_size", flashs_result.effect_size, fill_value=0.0
     )

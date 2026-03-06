@@ -395,7 +395,6 @@ async def test_tangram_optional_mapping_args_validation_warnings_and_low_score_w
     assert any("Could not project genes" in msg for msg in ctx.warnings)
     assert any("normalized probabilities are negative" in msg for msg in ctx.warnings)
     assert any("normalized probabilities exceed 1.0" in msg for msg in ctx.warnings)
-    assert any("Row sums don't equal 1.0" in msg for msg in ctx.warnings)
     assert any("score is suspiciously low" in msg for msg in ctx.warnings)
 
 

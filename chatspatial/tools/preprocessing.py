@@ -10,6 +10,7 @@ from ..models.analysis import PreprocessingResult
 from ..models.data import PreprocessingParameters
 from ..spatial_mcp_adapter import ToolContext
 from ..utils.adata_utils import (
+    check_is_integer_counts,
     ensure_unique_var_names_async,
     sample_expression_values,
     standardize_adata,
@@ -95,9 +96,7 @@ async def preprocess_data(
         adata.var["mt"] = adata.var_names.str.startswith(("MT-", "mt-"))
 
         # Identify ribosomal genes (RPS*, RPL* for human, Rps*, Rpl* for mouse)
-        adata.var["ribo"] = adata.var_names.str.startswith(
-            ("RPS", "RPL", "Rps", "Rpl")
-        )
+        adata.var["ribo"] = adata.var_names.str.startswith(("RPS", "RPL", "Rps", "Rpl"))
 
         # Calculate QC metrics including mitochondrial and ribosomal percentages
         sc.pp.calculate_qc_metrics(
@@ -183,9 +182,7 @@ async def preprocess_data(
                     expected_doublet_rate=params.scrublet_expected_doublet_rate,
                     threshold=params.scrublet_threshold,
                     sim_doublet_ratio=params.scrublet_sim_doublet_ratio,
-                    n_prin_comps=min(
-                        params.scrublet_n_prin_comps, adata.n_vars - 1
-                    ),
+                    n_prin_comps=min(params.scrublet_n_prin_comps, adata.n_vars - 1),
                     batch_key=(
                         params.batch_key
                         if params.batch_key in adata.obs.columns
@@ -390,7 +387,8 @@ async def preprocess_data(
                 )
 
             # Reconstruct sparse matrix and run SCTransform in R
-            ro.r("""
+            ro.r(
+                """
                 library(Matrix)
                 library(sctransform)
 
@@ -421,7 +419,8 @@ async def preprocess_data(
                 residual_variance <- vst_result$gene_attr$residual_variance
                 # Extract gene names that survived SCTransform filtering
                 kept_genes <- rownames(vst_result$y)
-            """)
+            """
+            )
 
             # Extract results from R
             with localconverter(ro.default_converter + numpy2ri.converter):
@@ -555,13 +554,21 @@ async def preprocess_data(
         require("scvi", feature="scVI normalization")
         import scvi
 
-        # Check if data appears to be raw counts (required for scVI)
-        X_sample = sample_expression_values(adata)
-
-        # Check for negative values (indicates already normalized data)
-        if np.any(X_sample < 0):
+        # Validate counts layer (created earlier) for scVI's count-based model
+        is_int, has_neg, _ = check_is_integer_counts(adata.layers["counts"])
+        if has_neg:
             raise DataError(
-                "scVI requires non-negative count data. Data contains negative values."
+                "scVI requires non-negative count data. "
+                "The counts layer contains negative values, "
+                "indicating already-normalized data."
+            )
+        if not is_int:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "scVI expects integer count data but the counts layer "
+                "contains non-integer values. This may indicate "
+                "pre-normalized data; results may be suboptimal."
             )
 
         try:
@@ -573,9 +580,7 @@ async def preprocess_data(
                 adata,
                 layer="counts",
                 batch_key=(
-                    params.batch_key
-                    if params.batch_key in adata.obs.columns
-                    else None
+                    params.batch_key if params.batch_key in adata.obs.columns else None
                 ),
             )
 
@@ -767,9 +772,7 @@ async def preprocess_data(
     adata.uns["preprocessing"]["completed"] = True
     adata.uns["preprocessing"]["n_pcs"] = params.n_pcs
     adata.uns["preprocessing"]["n_neighbors"] = params.n_neighbors
-    adata.uns["preprocessing"][
-        "clustering_resolution"
-    ] = params.clustering_resolution
+    adata.uns["preprocessing"]["clustering_resolution"] = params.clustering_resolution
 
     # Store the processed AnnData object back via ToolContext
     await ctx.set_adata(data_id, adata)
@@ -782,9 +785,7 @@ async def preprocess_data(
         n_cells=adata.n_obs,
         n_genes=adata.n_vars,
         n_hvgs=(
-            int(sum(adata.var.highly_variable))
-            if "highly_variable" in adata.var
-            else 0
+            int(sum(adata.var.highly_variable)) if "highly_variable" in adata.var else 0
         ),
         clusters=0,  # Clustering computed lazily by analysis tools
         qc_metrics=qc_metrics,

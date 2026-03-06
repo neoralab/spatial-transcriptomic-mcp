@@ -569,11 +569,17 @@ async def _annotate_with_tangram(
         # Get cell types and counts
         cell_types = list(cell_type_df.columns)
 
-        # ===== CRITICAL FIX: Row normalization for proper probability calculation =====
+        # ===== Row normalization for proper probability calculation =====
         # tangram_ct_pred contains unnormalized density/abundance values, NOT probabilities
         # Row sums can be != 1.0 and values can exceed 1.0
         # We normalize to convert densities → probability distributions
-        cell_type_prob = cell_type_df.div(cell_type_df.sum(axis=1), axis=0)
+        row_sums = cell_type_df.sum(axis=1)
+        zero_mask = row_sums == 0
+        cell_type_prob = cell_type_df.div(row_sums, axis=0)
+
+        # Handle zero-sum rows (spots with no valid mapping)
+        if zero_mask.any():
+            cell_type_prob.loc[zero_mask] = 0.0
 
         # Validation: Ensure normalized values are valid probabilities
         if not (cell_type_prob.values >= 0).all():
@@ -584,24 +590,34 @@ async def _annotate_with_tangram(
             await ctx.warning(
                 "Some normalized probabilities exceed 1.0 - normalization failed"
             )
-        if not np.allclose(cell_type_prob.sum(axis=1), 1.0):
+        valid_rows = ~zero_mask
+        if valid_rows.any() and not np.allclose(
+            cell_type_prob.loc[valid_rows].sum(axis=1), 1.0
+        ):
             await ctx.warning(
                 "Row sums don't equal 1.0 after normalization - numerical issue"
             )
 
-        # Assign cell type based on highest probability (argmax is same before/after normalization)
+        # Assign cell type based on highest probability
         adata_sp.obs[output_key] = cell_type_prob.idxmax(axis=1)
+        if zero_mask.any():
+            adata_sp.obs.loc[zero_mask, output_key] = "unassigned"
         ensure_categorical(adata_sp, output_key)
+
+        # Write per-cell confidence (max probability for assigned type)
+        per_cell_conf = cell_type_prob.max(axis=1)
+        if zero_mask.any():
+            per_cell_conf.loc[zero_mask] = 0.0
+        adata_sp.obs[confidence_key] = per_cell_conf.values
 
         # Get counts
         counts = adata_sp.obs[output_key].value_counts().to_dict()
 
-        # Calculate confidence scores from NORMALIZED probabilities
+        # Calculate per-cell-type aggregated confidence scores
         confidence_scores = {}
         for cell_type in cell_types:
             cells_of_type = adata_sp.obs[output_key] == cell_type
             if np.sum(cells_of_type) > 0:
-                # Use mean PROBABILITY as confidence (now guaranteed to be in [0, 1])
                 mean_prob = cell_type_prob.loc[cells_of_type, cell_type].mean()
                 confidence_scores[cell_type] = round(float(mean_prob), 3)
 
@@ -626,6 +642,10 @@ async def _annotate_with_tangram(
         # Copy cell type assignments
         if output_key in adata_sp.obs:
             adata.obs[output_key] = adata_sp.obs[output_key]
+
+        # Copy per-cell confidence scores
+        if confidence_key in adata_sp.obs:
+            adata.obs[confidence_key] = adata_sp.obs[confidence_key]
 
         # Copy tangram_ct_pred from obsm
         if "tangram_ct_pred" in adata_sp.obsm:
@@ -785,8 +805,13 @@ async def _annotate_with_scanvi(
 
     # Optional SCVI Pretraining
     if params.scanvi_use_scvi_pretrain:
+        # Ensure counts layer exists (consistent with direct branch)
+        ensure_counts_layer(
+            adata_ref,
+            error_message="scANVI requires raw counts in layers['counts'].",
+        )
+
         # Setup for SCVI with labels (required for SCANVI conversion)
-        # First ensure the reference has the cell type labels
         validate_obs_column(
             adata_ref, cell_type_key, "Cell type column (reference data)"
         )
@@ -794,9 +819,9 @@ async def _annotate_with_scanvi(
         # SCVI needs to know about labels for later SCANVI conversion
         scvi.model.SCVI.setup_anndata(
             adata_ref,
-            labels_key=cell_type_key,  # Important: include labels_key
+            labels_key=cell_type_key,
             batch_key=batch_key,
-            layer=params.layer,
+            layer="counts",
         )
 
         # Train SCVI
@@ -1275,7 +1300,10 @@ async def _annotate_with_cellassign(
 
     # Keep size factors aligned to subset observations.
     adata_subset.obs["size_factors"] = (
-        adata.obs["size_factors"].reindex(adata_subset.obs.index).fillna(1.0).astype(float)
+        adata.obs["size_factors"]
+        .reindex(adata_subset.obs.index)
+        .fillna(1.0)
+        .astype(float)
     )
 
     # Setup CellAssign on subset data only
@@ -1537,9 +1565,7 @@ source("https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/R/gen
 source("https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/R/sctype_score_.R")
 """
 
-_SCTYPE_DEFAULT_DB_URL = (
-    "https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/ScTypeDB_full.xlsx"
-)
+_SCTYPE_DEFAULT_DB_URL = "https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/ScTypeDB_full.xlsx"
 
 _R_SCTYPE_SCORING = """
 # Set row/column names and convert to dense
@@ -1652,7 +1678,9 @@ def _debug_cache(ctx: "ToolContext", msg: str) -> None:
         debug_fn(msg)
 
 
-def _pack_cache_entry(payload: tuple[Any, Any, Any, Any]) -> tuple[float, tuple[Any, ...]]:
+def _pack_cache_entry(
+    payload: tuple[Any, Any, Any, Any],
+) -> tuple[float, tuple[Any, ...]]:
     """Pack cache payload with timestamp."""
     return (time.time(), payload)
 
@@ -1787,9 +1815,7 @@ def _prepare_sctype_genesets(params: AnnotationParameters, ctx: "ToolContext") -
     else:
         local_db = Path(db_path).expanduser()
         if not local_db.exists():
-            raise DataNotFoundError(
-                f"scType database file not found: {local_db}"
-            )
+            raise DataNotFoundError(f"scType database file not found: {local_db}")
         db_path = local_db.as_posix()
 
     robjects, _, _, _, _, default_converter, openrlib, _ = validate_r_environment(ctx)
@@ -2027,9 +2053,13 @@ def _load_cached_sctype_results(cache_key: str, ctx: "ToolContext") -> Optional[
                 _debug_cache(ctx, "sc-type cache miss: disk entry expired")
                 return None
 
-            per_cell_types = cache_data.get("per_cell_types", cache_data.get("cell_types"))
+            per_cell_types = cache_data.get(
+                "per_cell_types", cache_data.get("cell_types")
+            )
             if not isinstance(per_cell_types, list):
-                raise ValueError("Invalid cache payload: missing per-cell sc-type labels")
+                raise ValueError(
+                    "Invalid cache payload: missing per-cell sc-type labels"
+                )
 
             results = (
                 per_cell_types,
@@ -2113,7 +2143,11 @@ async def _annotate_with_sctype(
         confidence_sums[ct] = confidence_sums.get(ct, 0.0) + float(conf)
         confidence_counts[ct] = confidence_counts.get(ct, 0) + 1
     confidence_by_celltype = {
-        ct: (confidence_sums[ct] / confidence_counts[ct]) if confidence_counts[ct] else 0.0
+        ct: (
+            (confidence_sums[ct] / confidence_counts[ct])
+            if confidence_counts[ct]
+            else 0.0
+        )
         for ct in dict.fromkeys(per_cell_types)
     }
 
