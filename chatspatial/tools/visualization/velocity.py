@@ -12,6 +12,7 @@ This module contains:
 from typing import TYPE_CHECKING, Optional
 
 import matplotlib.pyplot as plt
+import numpy as np
 
 if TYPE_CHECKING:
     import anndata as ad
@@ -97,7 +98,7 @@ async def _create_velocity_stream_plot(
     """Create RNA velocity stream plot using scv.pl.velocity_embedding_stream.
 
     Data requirements:
-        - adata.uns['velocity_graph']: Velocity transition graph
+        - adata.uns['velocity_graph']: Velocity transition graph (sparse matrix)
         - adata.obsm['X_umap'] or 'spatial': Embedding for visualization
     """
     require("scvelo", feature="RNA velocity visualization")
@@ -106,6 +107,19 @@ async def _create_velocity_stream_plot(
     if "velocity_graph" not in adata.uns:
         raise DataNotFoundError(
             "RNA velocity not computed. Run analyze_velocity_data first."
+        )
+
+    # Guard against non-graph placeholders (e.g. VELOVI sets True, not a matrix)
+    import scipy.sparse
+
+    vg = adata.uns["velocity_graph"]
+    if not scipy.sparse.issparse(vg) and not isinstance(vg, np.ndarray):
+        method = adata.uns.get("velocity_method", "unknown")
+        raise DataCompatibilityError(
+            f"velocity_graph is not a valid transition matrix "
+            f"(got {type(vg).__name__}). "
+            f"The '{method}' method does not produce a scVelo-compatible "
+            f"velocity graph. Use a different visualization type."
         )
 
     # Determine basis for plotting
@@ -305,9 +319,12 @@ async def _create_velocity_heatmap(
             sortby = col
             break
 
-    # If no time column found, compute velocity_pseudotime
+    # If no time column found, compute velocity_pseudotime (requires real graph)
     if sortby is None:
-        if "velocity_graph" in adata.uns:
+        import scipy.sparse
+
+        vg = adata.uns.get("velocity_graph")
+        if vg is not None and (scipy.sparse.issparse(vg) or isinstance(vg, np.ndarray)):
             if context:
                 await context.info("Computing velocity_pseudotime for heatmap ordering")
             scv.tl.velocity_pseudotime(adata)

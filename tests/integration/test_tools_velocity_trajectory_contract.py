@@ -40,9 +40,14 @@ async def test_analyze_rna_velocity_scvelo_branch_returns_expected_contract(
 
     monkeypatch.setattr(vel_module, "require", lambda *args, **kwargs: None)
     monkeypatch.setattr(vel_module, "validate_adata", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        vel_module, "compute_rna_velocity", lambda adata, mode, params: adata
-    )
+    def _fake_compute(adata, mode, params):
+        # Simulate scv.tl.velocity_graph() output (sparse transition matrix)
+        import scipy.sparse
+
+        adata.uns["velocity_graph"] = scipy.sparse.eye(adata.n_obs, format="csr")
+        return adata
+
+    monkeypatch.setattr(vel_module, "compute_rna_velocity", _fake_compute)
     monkeypatch.setattr(vel_module, "store_analysis_metadata", lambda *args, **kwargs: None)
     monkeypatch.setattr(vel_module, "export_analysis_result", lambda *args, **kwargs: None)
 

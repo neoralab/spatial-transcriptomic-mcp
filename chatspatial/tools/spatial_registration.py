@@ -36,10 +36,11 @@ logger = logging.getLogger(__name__)
 
 def _validate_spatial_coords(adata_list: list["ad.AnnData"]) -> str:
     """
-    Validate all slices have spatial coordinates.
+    Validate all slices have spatial coordinates under the same key.
 
-    Returns the spatial key found.
-    Raises ParameterError if any slice is missing coordinates.
+    Returns the common spatial key.
+    Raises ParameterError if any slice is missing coordinates or
+    if slices use different spatial keys.
     """
     spatial_key = None
     for i, adata in enumerate(adata_list):
@@ -51,6 +52,12 @@ def _validate_spatial_coords(adata_list: list["ad.AnnData"]) -> str:
             )
         if spatial_key is None:
             spatial_key = key
+        elif key != spatial_key:
+            raise ParameterError(
+                f"Spatial key mismatch: slice 0 uses '{spatial_key}' "
+                f"but slice {i} uses '{key}'. All slices must store "
+                f"coordinates under the same obsm key."
+            )
     return spatial_key or "spatial"
 
 

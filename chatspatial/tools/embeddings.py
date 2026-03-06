@@ -305,13 +305,26 @@ async def compute_embeddings(
     if params.compute_clustering and params.clustering_key in adata.obs:
         results_keys: dict[str, list[str]] = {"obs": [params.clustering_key]}
 
+        # Record actual parameters from adata.uns (may differ from requested
+        # when ensure_* reuses existing results instead of recomputing).
+        actual_n_pcs = params.n_pcs
+        actual_n_neighbors = params.n_neighbors
+        if "pca" in adata.uns and "params" in adata.uns["pca"]:
+            pca_params = adata.uns["pca"]["params"]
+            if hasattr(pca_params, "get"):
+                actual_n_pcs = pca_params.get("n_comps", actual_n_pcs)
+        if "neighbors" in adata.uns and "params" in adata.uns["neighbors"]:
+            nbr_params = adata.uns["neighbors"]["params"]
+            if hasattr(nbr_params, "get"):
+                actual_n_neighbors = nbr_params.get("n_neighbors", actual_n_neighbors)
+
         store_analysis_metadata(
             adata,
             analysis_name=f"embeddings_{params.clustering_method}",
             method=params.clustering_method,
             parameters={
-                "n_pcs": params.n_pcs,
-                "n_neighbors": params.n_neighbors,
+                "n_pcs": actual_n_pcs,
+                "n_neighbors": actual_n_neighbors,
                 "clustering_resolution": params.clustering_resolution,
                 "clustering_key": params.clustering_key,
             },
@@ -320,6 +333,7 @@ async def compute_embeddings(
                 "n_clusters": n_clusters,
                 "pca_variance_ratio": pca_variance_ratio,
                 "computed": computed,
+                "skipped": skipped,
             },
         )
 

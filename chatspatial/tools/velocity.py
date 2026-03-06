@@ -288,9 +288,7 @@ async def analyze_velocity_with_velovi(
 
         # Model training
         accelerator = get_accelerator(prefer_gpu=use_gpu)
-        velovi_model.train(
-            max_epochs=n_epochs, accelerator=accelerator
-        )
+        velovi_model.train(max_epochs=n_epochs, accelerator=accelerator)
 
         # Result extraction
         latent_time = velovi_model.get_latent_time(n_samples=25)
@@ -452,7 +450,11 @@ async def analyze_rna_velocity(
 
             if velovi_results.get("velocity_computed", False):
                 velocity_computed = True
-                adata.uns["velocity_graph"] = True
+                # Note: do NOT set adata.uns["velocity_graph"] here.
+                # VELOVI does not produce a scVelo-compatible transition graph;
+                # setting a boolean placeholder would mislead downstream tools
+                # (scv.pl.velocity_embedding_stream, scv.tl.velocity_pseudotime)
+                # that expect a sparse matrix.
                 adata.uns["velocity_method"] = "velovi"
             else:
                 raise ProcessingError("VELOVI failed to compute velocity")
@@ -505,6 +507,8 @@ async def analyze_rna_velocity(
     return RNAVelocityResult(
         data_id=data_id,
         velocity_computed=velocity_computed,
-        velocity_graph_key="velocity_graph" if velocity_computed else None,
+        velocity_graph_key=(
+            "velocity_graph" if "velocity_graph" in adata.uns else None
+        ),
         mode=velocity_method_used if params.method == "scvelo" else params.method,
     )
