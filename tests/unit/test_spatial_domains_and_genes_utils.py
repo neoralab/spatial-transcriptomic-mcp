@@ -11,7 +11,7 @@ from chatspatial.tools import spatial_domains as sd
 from chatspatial.tools import spatial_genes as sg
 from chatspatial.tools.spatial_domains import _refine_spatial_domains
 from chatspatial.tools.spatial_genes import _calculate_sparse_gene_stats
-from chatspatial.utils.exceptions import ParameterError, ProcessingError
+from chatspatial.utils.exceptions import DataNotFoundError, ParameterError, ProcessingError
 
 
 class DummyCtx:
@@ -73,7 +73,7 @@ async def test_identify_spatial_domains_missing_spatial_coordinates_raises_proce
     del adata.obsm["spatial"]
     params = SpatialDomainParameters(method="leiden", refine_domains=False)
 
-    with pytest.raises(ProcessingError, match="No spatial coordinates found"):
+    with pytest.raises(DataNotFoundError, match="No spatial coordinates found"):
         await sd.identify_spatial_domains("d1", DummyCtx(adata), params)
 
 
@@ -261,7 +261,7 @@ async def test_identify_spatial_domains_unknown_method_is_wrapped(
         update={"method": "unknown"}
     )
 
-    with pytest.raises(ProcessingError, match="Unsupported method"):
+    with pytest.raises(ParameterError, match="Unsupported method"):
         await sd.identify_spatial_domains("d1", DummyCtx(adata), params)
 
 

@@ -236,11 +236,11 @@ async def _create_single_feature_plot(
         # Gene expression
         values = get_gene_expression(adata, feature)
 
-        # Apply color scaling
+        # Apply color scaling (clamp negatives to 0 for log/sqrt safety)
         if params.color_scale == "log":
-            values = np.log1p(values)
+            values = np.log1p(np.maximum(values, 0))
         elif params.color_scale == "sqrt":
-            values = np.sqrt(values)
+            values = np.sqrt(np.maximum(values, 0))
 
         scatter = ax.scatter(
             coords[:, 0],
@@ -370,11 +370,11 @@ async def _create_multi_feature_plot(
             # Gene expression
             values = get_gene_expression(adata, feature)
 
-            # Apply color scaling
+            # Apply color scaling (clamp negatives to 0 for log/sqrt safety)
             if params.color_scale == "log":
-                values = np.log1p(values)
+                values = np.log1p(np.maximum(values, 0))
             elif params.color_scale == "sqrt":
-                values = np.sqrt(values)
+                values = np.sqrt(np.maximum(values, 0))
 
             # Color limits
             vmin = params.vmin if params.vmin is not None else np.percentile(values, 1)

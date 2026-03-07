@@ -306,6 +306,8 @@ async def identify_spatial_domains(
 
         return result
 
+    except (ParameterError, DataError, DataNotFoundError):
+        raise
     except Exception as e:
         raise ProcessingError(f"Error in spatial domain identification: {e}") from e
 
@@ -504,8 +506,16 @@ async def _identify_domains_clustering(
     """
     try:
         # Get parameters from params, use defaults if not provided
-        n_neighbors = params.cluster_n_neighbors or 15
-        spatial_weight = params.cluster_spatial_weight or 0.3
+        n_neighbors = (
+            params.cluster_n_neighbors
+            if params.cluster_n_neighbors is not None
+            else 15
+        )
+        spatial_weight = (
+            params.cluster_spatial_weight
+            if params.cluster_spatial_weight is not None
+            else 0.3
+        )
 
         # Ensure PCA and neighbors are computed (lazy computation)
         ensure_pca(adata)

@@ -2032,10 +2032,19 @@ def _run_sctype_scoring(
 
 
 def _softmax(scores_array: np.ndarray) -> np.ndarray:
-    """Compute softmax probabilities from raw scores (numerically stable)."""
-    shifted = scores_array - np.max(scores_array)
+    """Compute softmax probabilities from raw scores (numerically stable).
+
+    NaN values are treated as -inf (zero probability) so they don't
+    propagate through the entire output.
+    """
+    clean = np.where(np.isnan(scores_array), -np.inf, scores_array)
+    shifted = clean - np.nanmax(clean)
     exp_scores = np.exp(shifted)
-    return exp_scores / np.sum(exp_scores)
+    total = np.sum(exp_scores)
+    if total == 0:
+        # All entries are -inf / NaN → uniform zero
+        return np.zeros_like(scores_array, dtype=float)
+    return exp_scores / total
 
 
 def _assign_sctype_celltypes(
@@ -2050,6 +2059,13 @@ def _assign_sctype_celltypes(
 
     for col_name in scores_df.columns:
         cell_scores = scores_df[col_name]
+
+        # Guard against all-NaN columns (bad marker data)
+        if cell_scores.isna().all():
+            cell_types.append("Unknown")
+            confidence_scores.append(0.0)
+            continue
+
         max_idx = cell_scores.idxmax()
         max_score = cell_scores.loc[max_idx]
 

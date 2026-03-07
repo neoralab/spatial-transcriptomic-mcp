@@ -288,11 +288,11 @@ async def _create_correlation(
     # Get expression matrix
     expr_matrix = get_genes_expression(adata, available_genes)
 
-    # Apply color scaling
+    # Apply color scaling (clamp negatives to 0 for log/sqrt safety)
     if params.color_scale == "log":
-        expr_matrix = np.log1p(expr_matrix)
+        expr_matrix = np.log1p(np.maximum(expr_matrix, 0))
     elif params.color_scale == "sqrt":
-        expr_matrix = np.sqrt(expr_matrix)
+        expr_matrix = np.sqrt(np.maximum(expr_matrix, 0))
 
     # Create DataFrame for correlation
     expr_df = pd.DataFrame(expr_matrix, columns=available_genes)
