@@ -887,6 +887,15 @@ class SpatialStatisticsParameters(BaseModel):
         0.05,
         description="Significance level for hotspot detection.",
     )
+    local_join_count_alpha: Annotated[
+        float, Field(gt=0.0, le=1.0)
+    ] = Field(
+        default=0.05,
+        description=(
+            "Significance level for Local Join Count "
+            "(default: 0.05)."
+        ),
+    )
 
     # Co-occurrence specific parameters
     co_occurrence_interval: Optional[int] = Field(

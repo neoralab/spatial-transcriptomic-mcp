@@ -245,15 +245,38 @@ def infer_spatial_trajectory_cellrank(
                 # high entropy = multipotent/undifferentiated = early
                 # low entropy = committed to one fate = late
                 fate_matrix = np.asarray(absorption_probs)
+
+                # Check for NaN in fate probabilities
+                nan_mask = np.isnan(fate_matrix).any(axis=1)
+                if nan_mask.all():
+                    raise ProcessingError(
+                        "CellRank fate probabilities are all NaN. "
+                        "This indicates numerical instability in "
+                        "GPCCA. Try reducing n_states or adjusting "
+                        "kernel weights."
+                    )
+
                 fate_matrix = np.clip(fate_matrix, 1e-10, None)  # avoid log(0)
-                entropy = -np.sum(fate_matrix * np.log(fate_matrix), axis=1)
-                # Normalize to [0, 1]: max entropy = earliest, 0 entropy = latest
-                max_entropy = entropy.max()
-                pseudotime = (
-                    1 - entropy / max_entropy
-                    if max_entropy > 0
-                    else np.zeros_like(entropy)
+                entropy = -np.sum(
+                    fate_matrix * np.log(fate_matrix), axis=1
                 )
+
+                # NaN cells get pseudotime = NaN (not 0)
+                max_entropy = np.nanmax(entropy)
+                if max_entropy > 0:
+                    pseudotime = 1 - entropy / max_entropy
+                else:
+                    pseudotime = np.zeros_like(entropy)
+
+                if nan_mask.any():
+                    pseudotime[nan_mask] = np.nan
+                    import logging
+
+                    logging.getLogger(__name__).warning(
+                        "%d cells have NaN fate probabilities; "
+                        "their pseudotime is set to NaN.",
+                        int(nan_mask.sum()),
+                    )
 
                 adata_for_cellrank.obs["pseudotime"] = pseudotime
                 adata_for_cellrank.obsm["fate_probabilities"] = absorption_probs

@@ -243,7 +243,8 @@ async def _infer_cnv_infercnvpy(
             # Std: manual calculation using E[X^2] - E[X]^2
             mean_val = cnv_matrix.mean()
             mean_sq = cnv_matrix.multiply(cnv_matrix).mean()
-            statistics["std_cnv"] = float(np.sqrt(mean_sq - mean_val**2))
+            variance = float(mean_sq - mean_val**2)
+            statistics["std_cnv"] = float(np.sqrt(max(0.0, variance)))
 
             # Median: for highly sparse matrices (>50% zeros), median is 0
             # Otherwise use approximation with non-zero values

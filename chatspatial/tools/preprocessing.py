@@ -674,6 +674,14 @@ async def preprocess_data(
             # Use standard HVG selection
             n_hvgs = min(params.n_hvgs, adata.n_vars - 1)
 
+    # Guard against n_hvgs=0: in Python, [-0:] == [:] so
+    # np.argpartition(var, 0)[0:] would return ALL indices.
+    if n_hvgs <= 0:
+        n_hvgs = 1
+        await ctx.warning(
+            "Computed n_hvgs=0; forcing to 1 to avoid selecting all genes."
+        )
+
     # Statistical warning: Very low HVG count may lead to unstable clustering
     # Based on literature consensus: 500-5000 genes recommended, 1000-2000 typical
     # References:

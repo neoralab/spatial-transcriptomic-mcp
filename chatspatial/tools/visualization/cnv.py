@@ -133,20 +133,24 @@ async def _create_spatial_cnv(
     if context:
         await context.info(f"Visualizing {feature_to_plot} on spatial coordinates")
 
-    # Override colormap default for CNV data (RdBu_r is better for CNV scores)
-    if not params.colormap:
-        params.colormap = (
+    # Choose colormap default for CNV data without mutating the shared params
+    colormap = params.colormap
+    if not colormap:
+        colormap = (
             "RdBu_r"
             if not pd.api.types.is_categorical_dtype(adata.obs[feature_to_plot])
             else "tab20"
         )
 
+    # Work on a shallow copy so the caller's params object stays untouched
+    local_params = params.model_copy(update={"colormap": colormap})
+
     # Use centralized figure creation
-    fig, axes = create_figure_from_params(params, "spatial")
+    fig, axes = create_figure_from_params(local_params, "spatial")
     ax = axes[0]
 
     # Use the enhanced plot_spatial_feature helper
-    plot_spatial_feature(adata, ax, feature=feature_to_plot, params=params)
+    plot_spatial_feature(adata, ax, feature=feature_to_plot, params=local_params)
 
     if context:
         await context.info(f"Spatial CNV projection created for {feature_to_plot}")

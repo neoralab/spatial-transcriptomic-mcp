@@ -1214,8 +1214,15 @@ def _analyze_local_join_count(
                 "total_joins": float(ljc.LJC.sum()),
                 "mean_local_joins": float(ljc.LJC.mean()),
                 "std_local_joins": float(ljc.LJC.std()),
-                "n_significant": int((ljc.p_sim < 0.05).sum()),
-                "n_hotspots": int(((ljc.LJC > 0) & (ljc.p_sim < 0.05)).sum()),
+                "n_significant": int(
+                    (ljc.p_sim < params.local_join_count_alpha).sum()
+                ),
+                "n_hotspots": int(
+                    (
+                        (ljc.LJC > 0)
+                        & (ljc.p_sim < params.local_join_count_alpha)
+                    ).sum()
+                ),
             }
 
         # Batch update adata.obs (avoids DataFrame fragmentation)

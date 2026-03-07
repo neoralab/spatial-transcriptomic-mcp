@@ -396,7 +396,26 @@ async def _store_results(
     cell_types = list(proportions.columns)
 
     # Align proportions with spatial_adata.obs_names
-    full_proportions = proportions.reindex(spatial_adata.obs_names).fillna(0).values
+    # Reindex to match spatial_adata — new spots get NaN
+    reindexed = proportions.reindex(spatial_adata.obs_names)
+
+    # Distinguish: spots missing from proportions vs method-produced NaN
+    missing_mask = ~spatial_adata.obs_names.isin(proportions.index)
+    method_nan_mask = reindexed.isna().any(axis=1) & ~missing_mask
+
+    if method_nan_mask.any():
+        n_nan = int(method_nan_mask.sum())
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "%d spots have NaN proportions from %s (set to 0; "
+            "may indicate numerical issues).",
+            n_nan,
+            method,
+        )
+
+    # Fill all NaN with 0 for downstream compatibility
+    full_proportions = reindexed.fillna(0).values
 
     # Store in obsm
     spatial_adata.obsm[proportions_key] = full_proportions
