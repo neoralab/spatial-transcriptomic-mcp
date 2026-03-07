@@ -65,7 +65,11 @@ def _get_available_runs(
         if key.startswith("deconvolution_") and key.endswith("_metadata"):
             analysis_key = key.removesuffix("_metadata")
             meta = adata.uns[key]
-            method = meta.get("method", analysis_key.removeprefix("deconvolution_"))
+            # "method" is always stored by store_analysis_metadata;
+            # skip entries without it (corrupt/foreign metadata).
+            method = meta.get("method")
+            if method is None:
+                continue
             if analysis_key not in seen_keys:
                 runs.append((method, analysis_key))
                 seen_keys.add(analysis_key)

@@ -693,6 +693,7 @@ def perform_ora(
     gene_sets: dict[str, list[str]],
     gene_list: Optional[list[str]] = None,
     pvalue_threshold: float = 0.05,
+    significance_threshold: Optional[float] = None,
     min_size: int = 10,
     max_size: int = 500,
     adjust_method: str = "fdr",
@@ -707,7 +708,11 @@ def perform_ora(
         adata: Annotated data matrix.
         gene_sets: Gene sets to test (name -> gene list).
         gene_list: Genes to test. Uses DEGs from rank_genes_groups if None.
-        pvalue_threshold: P-value threshold for selecting DEGs.
+        pvalue_threshold: P-value threshold for selecting DEGs from
+            rank_genes_groups (only used when gene_list is None).
+        significance_threshold: Adjusted p-value threshold for counting and
+            filtering significant pathways in ORA results. If None, defaults
+            to 0.05 (standard Benjamini-Hochberg FDR control).
         min_size: Minimum gene set size.
         max_size: Maximum gene set size.
         adjust_method: Multiple testing correction ('fdr', 'bonferroni', 'none').
@@ -723,6 +728,9 @@ def perform_ora(
         LogFC filtering removed. ORA should use genes pre-filtered by find_markers.
         Gene filtering is the responsibility of differential expression analysis.
     """
+    # Default significance threshold for ORA: standard FDR 5%
+    if significance_threshold is None:
+        significance_threshold = 0.05
     # Get gene list if not provided
     if gene_list is None:
         # Try to get DEGs from adata
@@ -881,9 +889,12 @@ def perform_ora(
     )
     adata.uns[per_run_gs_key] = gene_sets
 
-    # Count significant using the user-supplied pvalue_threshold (not a hardcoded 0.05)
+    # Count significant pathways using the pathway significance threshold
+    # (distinct from the DEG selection threshold used for input gene filtering)
     n_significant = sum(
-        1 for p in adjusted_pvalues.values() if p is not None and p < pvalue_threshold
+        1
+        for p in adjusted_pvalues.values()
+        if p is not None and p < significance_threshold
     )
 
     # Store metadata for scientific provenance tracking
@@ -892,7 +903,8 @@ def perform_ora(
         analysis_name=analysis_key,
         method="ora",
         parameters={
-            "pvalue_threshold": pvalue_threshold,
+            "deg_pvalue_threshold": pvalue_threshold,
+            "significance_threshold": significance_threshold,
             "adjust_method": adjust_method,
             "min_size": min_size,
             "max_size": max_size,
@@ -915,7 +927,6 @@ def perform_ora(
         export_analysis_result(adata, data_id, analysis_key)
 
     # Filter result dicts to significant pathways (reduces MCP response size)
-    # Use the user-supplied pvalue_threshold for consistency
     (
         filtered_statistics,
         filtered_scores,
@@ -927,7 +938,7 @@ def perform_ora(
         pvalues,
         adjusted_pvalues,
         method="ora",
-        fdr_threshold=pvalue_threshold,
+        fdr_threshold=significance_threshold,
     )
 
     return EnrichmentResult(

@@ -32,6 +32,7 @@ def _add_deconv_metadata(
     dominant_type_key: str | None = None,
 ) -> None:
     adata.uns[f"deconvolution_{method}_metadata"] = {
+        "method": method,
         "parameters": {},
         "statistics": {
             "proportions_key": proportions_key,
@@ -84,6 +85,32 @@ def test_get_available_runs_prefers_metadata_then_fallback(minimal_spatial_adata
     assert [m for m, _ in runs2] == ["rctd"]
 
 
+def test_get_available_runs_parametric_key_with_reference_id(minimal_spatial_adata):
+    """Parametric key deconvolution_card_myref must resolve to method='card'."""
+    adata = minimal_spatial_adata.copy()
+    # Simulates _build_deconvolution_key("card", "myref") → "deconvolution_card_myref"
+    adata.uns["deconvolution_card_myref_metadata"] = {
+        "method": "card",
+        "parameters": {},
+    }
+
+    runs = viz_deconv._get_available_runs(adata)
+    assert len(runs) == 1
+    method, analysis_key = runs[0]
+    assert method == "card"
+    assert analysis_key == "deconvolution_card_myref"
+
+
+def test_get_available_runs_skips_metadata_without_method_field(minimal_spatial_adata):
+    """Metadata entries missing 'method' field are skipped (corrupt/legacy)."""
+    adata = minimal_spatial_adata.copy()
+    adata.uns["deconvolution_unknown_metadata"] = {"parameters": {}}
+    # No method field → should be skipped
+
+    runs = viz_deconv._get_available_runs(adata)
+    assert len(runs) == 0
+
+
 @pytest.mark.asyncio
 async def test_get_deconvolution_data_requires_existing_results(minimal_spatial_adata):
     with pytest.raises(DataNotFoundError, match="No deconvolution results found"):
@@ -93,8 +120,8 @@ async def test_get_deconvolution_data_requires_existing_results(minimal_spatial_
 @pytest.mark.asyncio
 async def test_get_deconvolution_data_requires_method_when_multiple(minimal_spatial_adata):
     adata = minimal_spatial_adata.copy()
-    adata.uns["deconvolution_m1_metadata"] = {"parameters": {}}
-    adata.uns["deconvolution_m2_metadata"] = {"parameters": {}}
+    adata.uns["deconvolution_m1_metadata"] = {"method": "m1", "parameters": {}}
+    adata.uns["deconvolution_m2_metadata"] = {"method": "m2", "parameters": {}}
 
     with pytest.raises(ParameterError, match="Multiple deconvolution results"):
         await viz_deconv.get_deconvolution_data(adata)
@@ -103,7 +130,7 @@ async def test_get_deconvolution_data_requires_method_when_multiple(minimal_spat
 @pytest.mark.asyncio
 async def test_get_deconvolution_data_validates_explicit_method(minimal_spatial_adata):
     adata = minimal_spatial_adata.copy()
-    adata.uns["deconvolution_m1_metadata"] = {"parameters": {}}
+    adata.uns["deconvolution_m1_metadata"] = {"method": "m1", "parameters": {}}
 
     with pytest.raises(DataNotFoundError, match="Deconvolution 'missing' not found"):
         await viz_deconv.get_deconvolution_data(adata, method="missing")
@@ -166,7 +193,7 @@ async def test_get_deconvolution_data_fallbacks_to_generic_cell_types_with_warni
 ):
     adata = minimal_spatial_adata.copy()
     adata.obsm["deconvolution_fallback"] = np.array([[0.5, 0.3, 0.2]] * adata.n_obs)
-    adata.uns["deconvolution_fallback_metadata"] = {"parameters": {}}
+    adata.uns["deconvolution_fallback_metadata"] = {"method": "fallback", "parameters": {}}
     ctx = DummyCtx()
 
     out = await viz_deconv.get_deconvolution_data(adata, method="fallback", context=ctx)
