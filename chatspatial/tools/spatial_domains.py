@@ -719,7 +719,11 @@ async def _identify_domains_stagate(
 
         # Calculate spatial graph
         # STAGATE_pyG uses smaller default radius (50 instead of 150)
-        rad_cutoff = params.stagate_rad_cutoff or 50
+        rad_cutoff = (
+            params.stagate_rad_cutoff
+            if params.stagate_rad_cutoff is not None
+            else 50
+        )
         with suppress_output():
             STAGATE_pyG.Cal_Spatial_Net(adata_stagate, rad_cutoff=rad_cutoff)
 
@@ -741,7 +745,9 @@ async def _identify_domains_stagate(
 
         loop = asyncio.get_running_loop()
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            timeout_seconds = params.timeout or 600
+            timeout_seconds = (
+                params.timeout if params.timeout is not None else 600
+            )
 
             def _train_stagate():
                 with suppress_output():
@@ -761,7 +767,11 @@ async def _identify_domains_stagate(
         # This eliminates R dependency while producing identical results (ARI = 1.0)
         from ..utils.compute import gmm_clustering
 
-        random_seed = params.stagate_random_seed or 42
+        random_seed = (
+            params.stagate_random_seed
+            if params.stagate_random_seed is not None
+            else 42
+        )
         embedding_data = adata_stagate.obsm[embeddings_key]
 
         gmm_labels = gmm_clustering(
@@ -793,7 +803,7 @@ async def _identify_domains_stagate(
 
     except asyncio.TimeoutError as e:
         raise ProcessingError(
-            f"STAGATE training timeout after {params.timeout or 600} seconds"
+            f"STAGATE training timeout after {params.timeout if params.timeout is not None else 600} seconds"
         ) from e
     except Exception as e:
         raise ProcessingError(f"STAGATE execution failed: {e}") from e
@@ -831,7 +841,11 @@ async def _identify_domains_graphst(
         device = torch.device(device_str)
 
         # Determine number of clusters
-        n_clusters = params.graphst_n_clusters or params.n_domains
+        n_clusters = (
+            params.graphst_n_clusters
+            if params.graphst_n_clusters is not None
+            else params.n_domains
+        )
 
         # Initialize model
         model = GraphST(
@@ -845,7 +859,7 @@ async def _identify_domains_graphst(
         loop = asyncio.get_running_loop()
         with concurrent.futures.ThreadPoolExecutor() as executor:
             # Set timeout
-            timeout_seconds = params.timeout or 600
+            timeout_seconds = params.timeout if params.timeout is not None else 600
 
             def _train_graphst():
                 with suppress_output():
@@ -973,7 +987,7 @@ async def _identify_domains_graphst(
 
     except asyncio.TimeoutError as e:
         raise ProcessingError(
-            f"GraphST training timeout after {params.timeout or 600} seconds"
+            f"GraphST training timeout after {params.timeout if params.timeout is not None else 600} seconds"
         ) from e
     except Exception as e:
         raise ProcessingError(f"GraphST execution failed: {e}") from e
@@ -1025,7 +1039,7 @@ async def _identify_domains_banksy(
 
         # Run BANKSY in thread pool to avoid blocking
         loop = asyncio.get_running_loop()
-        timeout_seconds = params.timeout or 600
+        timeout_seconds = params.timeout if params.timeout is not None else 600
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
             # Step 1: Initialize BANKSY (compute spatial graphs)
@@ -1112,7 +1126,7 @@ async def _identify_domains_banksy(
 
     except asyncio.TimeoutError as e:
         raise ProcessingError(
-            f"BANKSY timeout after {params.timeout or 600} seconds"
+            f"BANKSY timeout after {params.timeout if params.timeout is not None else 600} seconds"
         ) from e
     except Exception as e:
         raise ProcessingError(f"BANKSY execution failed: {e}") from e

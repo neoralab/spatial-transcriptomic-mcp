@@ -391,7 +391,10 @@ def _run_deseq2(
     top_up = df_to_degenes(upregulated, n_top_genes)
     top_down = df_to_degenes(downregulated, n_top_genes)
 
-    return top_up, top_down, int(n_significant), results_df
+    n_upregulated = len(upregulated)
+    n_downregulated = len(downregulated)
+
+    return top_up, top_down, int(n_significant), results_df, n_upregulated, n_downregulated
 
 
 async def _run_global_comparison(
@@ -445,7 +448,7 @@ async def _run_global_comparison(
 
     # Run DESeq2
     try:
-        top_up, top_down, n_significant, results_df = _run_deseq2(
+        top_up, top_down, n_significant, results_df, n_up, n_down = _run_deseq2(
             counts_df,
             metadata_df,
             condition1=params.condition1,
@@ -483,12 +486,8 @@ async def _run_global_comparison(
                 "analysis_type": "global",
                 "n_pseudobulk_samples": len(counts_df),
                 "n_significant_genes": n_significant,
-                "n_upregulated": len(
-                    [g for g in top_up if g.padj < params.padj_threshold]
-                ),
-                "n_downregulated": len(
-                    [g for g in top_down if g.padj < params.padj_threshold]
-                ),
+                "n_upregulated": n_up,
+                "n_downregulated": n_down,
             },
         ),
         results_df,
@@ -565,7 +564,7 @@ async def _run_stratified_comparison(
                 continue
 
             # Run DESeq2
-            top_up, top_down, n_significant, results_df = _run_deseq2(
+            top_up, top_down, n_significant, results_df, _, _ = _run_deseq2(
                 counts_df,
                 metadata_df,
                 condition1=params.condition1,
@@ -644,7 +643,7 @@ async def _run_stratified_comparison(
             statistics={
                 "analysis_type": "cell_type_stratified",
                 "n_cell_types_analyzed": len(cell_type_results),
-                "total_significant_genes": total_significant,
+                "total_significant_hits": total_significant,
                 "cell_types_with_de_genes": len(
                     [r for r in cell_type_results if r.n_significant_genes > 0]
                 ),

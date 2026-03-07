@@ -146,7 +146,7 @@ def test_run_deseq2_filters_thresholds_and_nan(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setitem(sys.modules, "pydeseq2.dds", dds_mod)
     monkeypatch.setitem(sys.modules, "pydeseq2.ds", ds_mod)
 
-    top_up, top_down, n_significant, results_df = _run_deseq2(
+    top_up, top_down, n_significant, results_df, n_up, n_down = _run_deseq2(
         counts_df,
         metadata_df,
         condition1="treated",
@@ -276,7 +276,7 @@ async def test_run_global_comparison_success_builds_contract(monkeypatch):
     monkeypatch.setattr(
         cc_module,
         "_run_deseq2",
-        lambda *_args, **_kwargs: (top_up, top_down, 2, pd.DataFrame()),
+        lambda *_args, **_kwargs: (top_up, top_down, 2, pd.DataFrame(), 1, 1),
     )
 
     result, results_df = await _run_global_comparison(
@@ -398,6 +398,8 @@ async def test_run_stratified_comparison_continues_after_cell_type_failure(monke
             [DEGene(gene="g_down", log2fc=-1.1, pvalue=0.002, padj=0.02)],
             2,
             pd.DataFrame(),
+            1,
+            1,
         ),
     )
 
@@ -407,7 +409,7 @@ async def test_run_stratified_comparison_continues_after_cell_type_failure(monke
 
     assert result.statistics["analysis_type"] == "cell_type_stratified"
     assert result.statistics["n_cell_types_analyzed"] == 1
-    assert result.statistics["total_significant_genes"] == 2
+    assert result.statistics["total_significant_hits"] == 2
     assert result.cell_type_results is not None
     assert result.cell_type_results[0].cell_type == "good"
     assert any("Analysis failed for bad: bad type failed" in m for m in ctx.warn_logs)
