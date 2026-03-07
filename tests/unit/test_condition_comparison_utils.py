@@ -454,9 +454,6 @@ async def test_compare_conditions_min_samples_guard_for_condition2(
         "get_raw_data_source",
         lambda *_args, **_kwargs: _RawStub(adata.X, adata.var_names),
     )
-    monkeypatch.setattr(
-        cc_module, "check_is_integer_counts", lambda _X: (True, None, None)
-    )
 
     params = ConditionComparisonParameters(
         condition_key="condition",
@@ -489,9 +486,6 @@ async def test_compare_conditions_min_samples_guard_for_condition1(
         "get_raw_data_source",
         lambda *_args, **_kwargs: _RawStub(adata.X, adata.var_names),
     )
-    monkeypatch.setattr(
-        cc_module, "check_is_integer_counts", lambda _X: (True, None, None)
-    )
 
     params = ConditionComparisonParameters(
         condition_key="condition",
@@ -502,79 +496,6 @@ async def test_compare_conditions_min_samples_guard_for_condition1(
     )
     with pytest.raises(DataError, match="Insufficient samples for treated: 1"):
         await compare_conditions("d1", ctx, params)
-
-
-@pytest.mark.asyncio
-async def test_compare_conditions_stratified_branch_warns_for_non_integer_counts(
-    minimal_spatial_adata, monkeypatch: pytest.MonkeyPatch
-):
-    adata = minimal_spatial_adata.copy()
-    adata.obs["condition"] = ["treated"] * 30 + ["control"] * 30
-    adata.obs["sample"] = ["s1"] * 15 + ["s2"] * 15 + ["s3"] * 15 + ["s4"] * 15
-    adata.obs["cell_type"] = ["T"] * 30 + ["B"] * 30
-    ctx = DummyCtx(adata)
-
-    class _RawStub:
-        def __init__(self, X, var_names):
-            self.X = X.astype(np.float32)
-            self.var_names = var_names
-
-    called = {"stratified": False}
-
-    async def _fake_stratified(*_args, **_kwargs):
-        data_id = _kwargs.get("data_id", "")
-        n_samples_condition1 = _kwargs.get("n_samples_condition1", 0)
-        n_samples_condition2 = _kwargs.get("n_samples_condition2", 0)
-        results_key = _kwargs.get("results_key", "")
-        called["stratified"] = True
-        return (
-            ConditionComparisonResult(
-                data_id=data_id,
-                method="pseudobulk",
-                comparison="treated vs control",
-                condition_key="condition",
-                condition1="treated",
-                condition2="control",
-                sample_key="sample",
-                cell_type_key="cell_type",
-                n_samples_condition1=n_samples_condition1,
-                n_samples_condition2=n_samples_condition2,
-                cell_type_results=[],
-                results_key=results_key,
-                statistics={"analysis_type": "cell_type_stratified"},
-            ),
-            None,  # full_results_df
-        )
-
-    monkeypatch.setattr(cc_module, "require", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        cc_module,
-        "get_raw_data_source",
-        lambda *_args, **_kwargs: _RawStub(adata.X, adata.var_names),
-    )
-    monkeypatch.setattr(
-        cc_module, "check_is_integer_counts", lambda _X: (False, None, None)
-    )
-    monkeypatch.setattr(cc_module, "_run_stratified_comparison", _fake_stratified)
-    monkeypatch.setattr(
-        cc_module, "store_analysis_metadata", lambda *_args, **_kwargs: None
-    )
-    monkeypatch.setattr(
-        cc_module, "export_analysis_result", lambda *_args, **_kwargs: None
-    )
-
-    params = ConditionComparisonParameters(
-        condition_key="condition",
-        condition1="treated",
-        condition2="control",
-        sample_key="sample",
-        cell_type_key="cell_type",
-    )
-    result = await compare_conditions("d1", ctx, params)
-
-    assert called["stratified"] is True
-    assert result.results_key == "condition_comparison_treated_vs_control"
-    assert any("Data appears to be normalized" in m for m in ctx.warn_logs)
 
 
 def test_validate_sample_condition_mapping_clean():

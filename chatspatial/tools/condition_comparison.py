@@ -23,7 +23,6 @@ from ..models.data import ConditionComparisonParameters
 from ..spatial_mcp_adapter import ToolContext
 from ..utils import validate_obs_column
 from ..utils.adata_utils import (
-    check_is_integer_counts,
     get_raw_data_source,
     shallow_copy_adata,
     store_analysis_metadata,
@@ -109,19 +108,11 @@ async def compare_conditions(
     )
 
     # Get raw counts (required for DESeq2)
-    # Use get_raw_data_source (single source of truth) with require_integer_counts
+    # require_integer_counts=True raises DataError if no integer counts found
     raw_result = get_raw_data_source(
         adata_filtered, prefer_complete_genes=False, require_integer_counts=True
     )
     raw_X, var_names = raw_result.X, raw_result.var_names
-
-    # Validate counts are integers (handles sparse matrices)
-    is_int, _, _ = check_is_integer_counts(raw_X)
-    if not is_int:
-        await ctx.warning(
-            "Data appears to be normalized. DESeq2 requires raw integer counts. "
-            "Results may be inaccurate. Consider using adata.raw."
-        )
 
     # Validate each sample maps to exactly one condition, then count per condition
     sample_condition_map = _validate_sample_condition_mapping(

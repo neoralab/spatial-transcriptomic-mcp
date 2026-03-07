@@ -93,9 +93,7 @@ def _get_score_columns(adata: "ad.AnnData") -> list[str]:
         analysis_name = uns_key.removesuffix("_metadata")
         if not analysis_name.startswith(prefixes):
             continue
-        obs_cols = get_analysis_metadata_field(
-            adata, analysis_name, "results_keys"
-        )
+        obs_cols = get_analysis_metadata_field(adata, analysis_name, "results_keys")
         if obs_cols and isinstance(obs_cols, dict) and "obs" in obs_cols:
             # Filter to only columns that actually exist
             for col in obs_cols["obs"]:
@@ -428,10 +426,7 @@ def _create_enrichmap_cross_correlation(
     if params.analysis_method:
         hint = params.analysis_method
         for uns_key in adata.uns:
-            if (
-                uns_key.startswith("enrichment_spatial_gene_sets_")
-                and hint in uns_key
-            ):
+            if uns_key.startswith("enrichment_spatial_gene_sets_") and hint in uns_key:
                 gene_sets_key = uns_key
                 break
 
@@ -486,7 +481,17 @@ def _create_enrichmap_single_score(
             "Feature parameter required for spatial enrichment visualization"
         )
 
-    score_col = f"{params.feature}_score"
+    # Normalize feature to a single string
+    feature = params.feature
+    if isinstance(feature, list):
+        feature = feature[0] if feature else None
+    if not feature:
+        raise DataNotFoundError(
+            "Feature parameter required for spatial enrichment visualization"
+        )
+
+    # Accept both "pathway" and "pathway_score" forms
+    score_col = feature if feature.endswith("_score") else f"{feature}_score"
     validate_obs_column(adata, score_col, "Score")
 
     if params.subtype == "spatial_correlogram":

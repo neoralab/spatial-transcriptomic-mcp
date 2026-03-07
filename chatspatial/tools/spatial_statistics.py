@@ -1077,7 +1077,9 @@ def _analyze_join_count(
         w = KNN.from_array(coords, k=params.n_neighbors)
 
         # Validate binary data (Join_Counts requires exactly 2 categories)
-        n_categories = len(adata.obs[cluster_key].cat.categories)
+        # Use observed categories only — unused categories in the dtype don't count
+        observed = adata.obs[cluster_key].cat.remove_unused_categories()
+        n_categories = len(observed.cat.categories)
         if n_categories != 2:
             raise ParameterError(
                 f"Join Count requires binary data (exactly 2 categories). "
@@ -1191,8 +1193,8 @@ def _analyze_local_join_count(
         # This ensures compatibility with Join_Counts_Local
         w = KNN.from_array(coords, k=params.n_neighbors)
 
-        # Get unique categories
-        categories = adata.obs[cluster_key].unique()
+        # Get unique categories, excluding NaN/None
+        categories = adata.obs[cluster_key].dropna().unique()
         n_categories = len(categories)
 
         results = {}

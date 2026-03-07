@@ -44,7 +44,12 @@ if TYPE_CHECKING:
 from ..models.analysis import CellCommunicationResult
 from ..models.data import CellCommunicationParameters
 from ..utils import validate_obs_column
-from ..utils.adata_utils import get_raw_data_source, get_spatial_key, to_dense
+from ..utils.adata_utils import (
+    check_is_integer_counts,
+    get_raw_data_source,
+    get_spatial_key,
+    to_dense,
+)
 from ..utils.compute import top_n_desc_indices
 from ..utils.dependency_manager import require, validate_r_package
 from ..utils.exceptions import (
@@ -1291,7 +1296,8 @@ def _analyze_communication_cellchat_r(
             # Memory optimization: Get CellChatDB gene list and pre-filter
             # This reduces memory from O(n_cells × n_all_genes) to O(n_cells × n_db_genes)
             # Typical savings: 20000 genes → 1500 genes = 13x memory reduction
-            ro.r(f"""
+            ro.r(
+                f"""
                 CellChatDB <- {db_name}
                 # Get all genes used in CellChatDB (ligands, receptors, cofactors)
                 cellchat_genes <- unique(c(
@@ -1300,7 +1306,8 @@ def _analyze_communication_cellchat_r(
                     unlist(strsplit(CellChatDB$interaction$receptor, "_"))
                 ))
                 cellchat_genes <- cellchat_genes[!is.na(cellchat_genes)]
-            """)
+            """
+            )
             cellchat_genes_r = ro.r("cellchat_genes")
             cellchat_genes = set(cellchat_genes_r)
 
@@ -1365,7 +1372,8 @@ def _analyze_communication_cellchat_r(
                 spatial_tol = params.cellchat_spatial_tol
                 ro.globalenv["pixel_ratio"] = pixel_ratio
                 ro.globalenv["spatial_tol"] = spatial_tol
-                ro.r("""
+                ro.r(
+                    """
                     spatial.factors <- data.frame(
                         ratio = pixel_ratio,
                         tol = spatial_tol
@@ -1379,52 +1387,65 @@ def _analyze_communication_cellchat_r(
                         coordinates = as.matrix(spatial_locs),
                         spatial.factors = spatial.factors
                     )
-                """)
+                """
+                )
             else:
                 # Non-spatial mode
-                ro.r("""
+                ro.r(
+                    """
                     cellchat <- createCellChat(
                         object = as.matrix(expr_matrix),
                         meta = meta_df,
                         group.by = "labels"
                     )
-                """)
+                """
+                )
 
             # Set database
-            ro.r(f"""
+            ro.r(
+                f"""
                 CellChatDB <- {db_name}
-            """)
+            """
+            )
 
             # Subset database by category if specified
             if params.cellchat_db_category != "All":
-                ro.r(f"""
+                ro.r(
+                    f"""
                     CellChatDB.use <- subsetDB(
                         CellChatDB,
                         search = "{params.cellchat_db_category}"
                     )
                     cellchat@DB <- CellChatDB.use
-                """)
+                """
+                )
             else:
-                ro.r("""
+                ro.r(
+                    """
                     cellchat@DB <- CellChatDB
-                """)
+                """
+                )
 
             # Preprocessing
-            ro.r("""
+            ro.r(
+                """
                 cellchat <- subsetData(cellchat)
                 cellchat <- identifyOverExpressedGenes(cellchat)
                 cellchat <- identifyOverExpressedInteractions(cellchat)
-            """)
+            """
+            )
 
             # Project data (optional but recommended)
-            ro.r("""
+            ro.r(
+                """
                 # Project data onto PPI network (optional)
                 tryCatch({
                     cellchat <- projectData(cellchat, PPI.human)
                 }, error = function(e) {
                     message("Skipping data projection: ", e$message)
                 })
-            """)
+            """
+            )
 
             # Compute communication probability
             if has_spatial and params.cellchat_distance_use:
@@ -1435,7 +1456,8 @@ def _analyze_communication_cellchat_r(
                 else:
                     contact_param = f"contact.knn.k = {params.cellchat_contact_knn_k}"
 
-                ro.r(f"""
+                ro.r(
+                    f"""
                     cellchat <- computeCommunProb(
                         cellchat,
                         type = "{params.cellchat_type}",
@@ -1446,35 +1468,45 @@ def _analyze_communication_cellchat_r(
                         scale.distance = {params.cellchat_scale_distance},
                         {contact_param}
                     )
-                """)
+                """
+                )
             else:
                 # Non-spatial mode
-                ro.r(f"""
+                ro.r(
+                    f"""
                     cellchat <- computeCommunProb(
                         cellchat,
                         type = "{params.cellchat_type}",
                         trim = {params.cellchat_trim},
                         population.size = {str(params.cellchat_population_size).upper()}
                     )
-                """)
+                """
+                )
 
             # Filter communication
-            ro.r(f"""
+            ro.r(
+                f"""
                 cellchat <- filterCommunication(cellchat, min.cells = {params.cellchat_min_cells})
-            """)
+            """
+            )
 
             # Compute pathway-level communication
-            ro.r("""
+            ro.r(
+                """
                 cellchat <- computeCommunProbPathway(cellchat)
-            """)
+            """
+            )
 
             # Aggregate network
-            ro.r("""
+            ro.r(
+                """
                 cellchat <- aggregateNet(cellchat)
-            """)
+            """
+            )
 
             # Extract results
-            ro.r("""
+            ro.r(
+                """
                 # Get LR pairs
                 lr_pairs <- cellchat@LR$LRsig
 
@@ -1487,9 +1519,10 @@ def _analyze_communication_cellchat_r(
                 # Count interactions
                 n_lr_pairs <- length(unique(lr_pairs$interaction_name))
 
-                # Get significant pairs (probability > 0)
-                prob_matrix <- net$prob
-                n_significant <- sum(prob_matrix > 0, na.rm = TRUE)
+                # Count significant interactions using p-value matrix
+                # (prob > 0 is necessary but NOT sufficient for significance)
+                pval_matrix <- net$pval
+                n_significant <- sum(pval_matrix < 0.05, na.rm = TRUE)
 
                 # Get top pathways
                 pathway_names <- rownames(netP$prob)
@@ -1508,7 +1541,8 @@ def _analyze_communication_cellchat_r(
                 } else {
                     top_lr <- character(0)
                 }
-            """)
+            """
+            )
 
             # Convert results back to Python (force native types for h5ad compatibility)
             n_lr_pairs = int(ro.r("n_lr_pairs")[0])
@@ -1661,10 +1695,11 @@ async def _analyze_communication_fastccc(
                 var=pd.DataFrame(index=gene_names),
             )
 
-            # Check if data needs normalization (FastCCC max threshold is 14)
-            max_val = np.max(temp_adata.X)
-            if max_val > 14:
-                # Apply standard scanpy normalization pipeline
+            # FastCCC requires normalized log1p-transformed data (max < 14).
+            # Detect raw counts via integer check (robust to low-count data
+            # where max <= 14 but normalization is still needed).
+            is_int, _, _ = check_is_integer_counts(temp_adata.X)
+            if is_int:
                 sc.pp.normalize_total(temp_adata, target_sum=1e4)
                 sc.pp.log1p(temp_adata)
 
@@ -1727,14 +1762,19 @@ async def _analyze_communication_fastccc(
                 )
 
                 # Read results from saved files (Cauchy method saves to files)
-                # Find the task ID from output files
-                pval_files = glob.glob(os.path.join(output_dir, "*_Cauchy_pvals.tsv"))
+                pval_files = sorted(
+                    glob.glob(os.path.join(output_dir, "*_Cauchy_pvals.tsv"))
+                )
                 if not pval_files:
                     raise ProcessingError(
                         "FastCCC Cauchy combination did not produce output files"
                     )
+                if len(pval_files) > 1:
+                    raise ProcessingError(
+                        f"Expected 1 Cauchy result file, found {len(pval_files)}. "
+                        "Possible residual files from a previous run."
+                    )
 
-                # Extract task_id from filename
                 pval_file = pval_files[0]
                 task_id = os.path.basename(pval_file).replace("_Cauchy_pvals.tsv", "")
 

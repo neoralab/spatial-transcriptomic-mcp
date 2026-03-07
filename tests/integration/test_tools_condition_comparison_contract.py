@@ -73,9 +73,6 @@ async def test_compare_conditions_uses_global_branch_and_returns_contract(
         "get_raw_data_source",
         lambda *args, **kwargs: _RawStub(adata.X, adata.var_names),
     )
-    monkeypatch.setattr(
-        cc_module, "check_is_integer_counts", lambda X: (True, None, None)
-    )
 
     fake_de_results = pd.DataFrame(
         {"log2FoldChange": [1.5, -0.8], "padj": [0.01, 0.05]},
