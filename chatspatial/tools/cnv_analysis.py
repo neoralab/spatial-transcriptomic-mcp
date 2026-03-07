@@ -583,17 +583,21 @@ def _infer_cnv_numbat(
         # Discover the actual iteration by finding clone_post_*.tsv files.
         import pandas as pd
 
-        clone_post_files = sorted(glob.glob(os.path.join(out_dir, "clone_post_*.tsv")))
+        clone_post_files = glob.glob(os.path.join(out_dir, "clone_post_*.tsv"))
         if not clone_post_files:
             raise DataNotFoundError(f"No Numbat clone_post output found in: {out_dir}")
-        # Use the highest iteration (last in sorted order)
-        clone_post_file = clone_post_files[-1]
-        # Extract iteration suffix (e.g., "2" from "clone_post_2.tsv")
-        iter_suffix = (
-            os.path.basename(clone_post_file)
-            .replace("clone_post_", "")
-            .replace(".tsv", "")
-        )
+
+        # Extract numeric iteration suffix for correct ordering
+        # (string sort would put "2" after "10")
+        def _iter_num(path: str) -> int:
+            stem = os.path.basename(path).replace("clone_post_", "").replace(".tsv", "")
+            try:
+                return int(stem)
+            except ValueError:
+                return -1
+
+        clone_post_file = max(clone_post_files, key=_iter_num)
+        iter_suffix = str(_iter_num(clone_post_file))
 
         # 1. Read clone posteriors (cell-level assignments)
         clone_post = pd.read_csv(clone_post_file, sep="\t")

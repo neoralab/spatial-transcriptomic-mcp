@@ -324,7 +324,7 @@ def _run_deseq2(
     n_top_genes: int = 50,
     padj_threshold: float = 0.05,
     log2fc_threshold: float = 0.0,
-) -> tuple[list[DEGene], list[DEGene], int, pd.DataFrame]:
+) -> tuple[list[DEGene], list[DEGene], int, pd.DataFrame, int, int]:
     """Run DESeq2 analysis on pseudobulk data.
 
     Args:
@@ -337,7 +337,8 @@ def _run_deseq2(
         log2fc_threshold: Log2 fold change threshold
 
     Returns:
-        Tuple of (top_upregulated, top_downregulated, n_significant, results_df)
+        Tuple of (top_upregulated, top_downregulated, n_significant,
+        results_df, n_upregulated, n_downregulated)
     """
     from pydeseq2.dds import DeseqDataSet
     from pydeseq2.ds import DeseqStats

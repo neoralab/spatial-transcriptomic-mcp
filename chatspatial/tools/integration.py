@@ -711,10 +711,18 @@ def integrate_with_scvi(
     # it appears to contain integer counts.
     layer_for_scvi: str | None = None
     if "counts" in combined.layers:
-        layer_for_scvi = "counts"
+        is_int_counts, has_neg_counts, _ = check_is_integer_counts(
+            combined.layers["counts"]
+        )
+        if is_int_counts and not has_neg_counts:
+            layer_for_scvi = "counts"
+        else:
+            raise DataError(
+                "layers['counts'] exists but does not contain valid "
+                "integer counts (found normalized or negative values). "
+                "scVI requires raw integer counts."
+            )
     else:
-        from ..utils.adata_utils import check_is_integer_counts
-
         is_int, has_neg, _ = check_is_integer_counts(combined.X)
         if is_int and not has_neg:
             layer_for_scvi = None  # X is already counts
