@@ -33,9 +33,17 @@ def test_run_spatial_pipeline_sync_returns_widget_payload(monkeypatch):
 
     assert result["structuredContent"]["status"] == "completed"
     assert result["_meta"]["openai/widgetAccessible"] is True
-    assert result["_meta"]["chatspatial/widget"]["type"] == "spatial_pipeline"
+    assert result["_meta"]["openai/widgetPrefersBorder"] is True
+    assert result["_meta"]["chatspatial/widget"]["pipeline"]["type"] == "spatial_pipeline"
 
 
 def test_get_pipeline_status_rejects_unknown_job_id():
     with pytest.raises(Exception):
         asyncio.run(server_mod.get_pipeline_status("missing-job"))
+
+
+def test_get_pipeline_status_has_widget_meta():
+    server_mod._PIPELINE_JOBS["j1"] = server_mod.PipelineJob(job_id="j1", data_id="d1", status="running")
+    result = asyncio.run(server_mod.get_pipeline_status("j1"))
+    assert result["_meta"]["openai/outputTemplate"] == "ui://chatspatial/widgets/pipeline-status.html"
+    assert result["_meta"]["chatspatial/widget"]["pipeline_status"]["job_id"] == "j1"
