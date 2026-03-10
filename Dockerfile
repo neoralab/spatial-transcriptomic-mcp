@@ -3,13 +3,20 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
+    UV_SYSTEM_PYTHON=1 \
     PORT=8080
 
 WORKDIR /app
 
-# Install ChatSpatial package from source
+# Build dependencies for Python packages with native extensions (for example `annoy`)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install ChatSpatial package from source with uv
 COPY . /app
-RUN pip install --upgrade pip && pip install .
+RUN pip install --no-cache-dir --upgrade pip uv \
+    && uv pip install --system --no-cache .
 
 EXPOSE 8080
 
