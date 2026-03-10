@@ -180,6 +180,12 @@ The key requirement is **MCP support**, not a specific LLM provider.
 
 ---
 
+## Remote Deployment (Cloud Run)
+
+If you want one centralized MCP server reachable by multiple users/clients, deploy ChatSpatial on Cloud Run with `streamable-http` transport.
+
+See: [Cloud Run Deployment Guide](cloud-run.md).
+
 ## Environment Variables (Optional)
 
 Configure ChatSpatial behavior using environment variables:

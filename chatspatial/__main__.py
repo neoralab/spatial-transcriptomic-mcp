@@ -2,9 +2,10 @@
 Entry point for ChatSpatial.
 
 This module provides the command-line interface for starting the
-ChatSpatial server using either stdio or SSE transport.
+ChatSpatial server using stdio, SSE, or Streamable HTTP transport.
 """
 
+import os
 import sys
 import traceback
 from typing import Literal, cast
@@ -27,17 +28,17 @@ def cli():
 
 
 @cli.command()
-@click.option("--port", default=8000, help="Port to listen on for SSE transport")
+@click.option("--port", default=8000, help="Port to listen on for HTTP transports")
 @click.option(
     "--transport",
-    type=click.Choice(["stdio", "sse"]),
+    type=click.Choice(["stdio", "sse", "streamable-http"]),
     default="stdio",
-    help="Transport type (stdio or sse)",
+    help="Transport type (stdio, sse, or streamable-http)",
 )
 @click.option(
     "--host",
     default="127.0.0.1",  # nosec B104 - Default to localhost for security
-    help="Host to bind to for SSE transport",
+    help="Host to bind to for HTTP transports",
 )
 @click.option(
     "--log-level",
@@ -51,10 +52,23 @@ def cli():
     default=False,
     help="Print initialization info",
 )
-def server(port: int, transport: str, host: str, log_level: str, verbose: bool):
+@click.option(
+    "--cloud-run",
+    is_flag=True,
+    default=False,
+    help="Cloud Run mode: use streamable-http on 0.0.0.0:$PORT",
+)
+def server(
+    port: int,
+    transport: str,
+    host: str,
+    log_level: str,
+    verbose: bool,
+    cloud_run: bool,
+):
     """Start the ChatSpatial server.
 
-    This command starts the ChatSpatial server using either stdio or SSE transport.
+    This command starts the ChatSpatial server using stdio, SSE, or Streamable HTTP transport.
     For stdio transport, the server communicates through standard input/output.
     For SSE transport, the server starts an HTTP server on the specified host and port.
     """
@@ -63,8 +77,14 @@ def server(port: int, transport: str, host: str, log_level: str, verbose: bool):
             # Re-initialize with verbose output
             config.init_runtime(verbose=True)
 
+        # Cloud Run requires HTTP server bound to all interfaces and PORT env var
+        if cloud_run:
+            host = "0.0.0.0"
+            transport = "streamable-http"
+            port = int(os.environ.get("PORT", str(port)))
+
         print(
-            f"Starting ChatSpatial server with {transport} transport...",
+            f"Starting ChatSpatial server with {transport} transport on {host}:{port}...",
             file=sys.stderr,
         )
 
