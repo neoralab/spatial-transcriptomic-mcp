@@ -2,9 +2,12 @@
 Main server implementation for ChatSpatial using the Spatial MCP Adapter.
 """
 
+import asyncio
 import base64
 import hashlib
 import os
+import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional, TypeVar
 
@@ -186,6 +189,54 @@ def _resolve_params(params: Optional[P], default_factory: type[P]) -> P:
 
 _UPLOAD_DIR = Path(os.environ.get("CHATSPATIAL_DATA_DIR", "/data"))
 _MAX_UPLOAD_BYTES = int(os.environ.get("CHATSPATIAL_MAX_UPLOAD_MB", "500")) * 1024 * 1024
+
+
+@dataclass
+class PipelineJob:
+    """Track lifecycle of long-running pipeline jobs."""
+
+    job_id: str
+    data_id: str
+    status: str = "running"
+    result: Optional[dict[str, Any]] = None
+    error: Optional[str] = None
+
+
+_PIPELINE_JOBS: dict[str, PipelineJob] = {}
+
+
+def _extract_visualization_path(visualization_result: str) -> str:
+    """Extract visualization file path from visualize_data output."""
+    match = re.search(r"Visualization saved:\s*(.+)", visualization_result)
+    if not match:
+        raise ParameterError(
+            "Unable to extract plot path from visualization result. "
+            "Expected text containing 'Visualization saved: <path>'."
+        )
+    return match.group(1).strip()
+
+
+def _encode_image_to_data_uri(path: str) -> tuple[str, str]:
+    """Load image and return (data_uri, mime_type)."""
+    image_path = Path(path)
+    if not image_path.exists() or not image_path.is_file():
+        raise ParameterError(f"Visualization file not found: {path}")
+
+    ext = image_path.suffix.lower().lstrip(".")
+    mime = {
+        "png": "image/png",
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "svg": "image/svg+xml",
+        "webp": "image/webp",
+    }.get(ext)
+    if not mime:
+        raise ParameterError(
+            f"Unsupported image format '.{ext}'. Use png/jpg/jpeg/svg/webp output format."
+        )
+
+    encoded = base64.b64encode(image_path.read_bytes()).decode("utf-8")
+    return f"data:{mime};base64,{encoded}", mime
 
 
 @mcp.tool(
@@ -496,6 +547,160 @@ async def compute_embeddings(
     dumped = result.model_dump()
     await data_manager.save_result(data_id, "embeddings", dumped)
     return dumped
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        idempotentHint=False,
+        openWorldHint=False,
+    )
+)
+@mcp_tool_error_handler()
+async def run_spatial_pipeline(
+    data_id: str,
+    cluster_key: str = "leiden",
+    n_top_genes: int = 30,
+    async_mode: bool = True,
+    fast_mode: bool = True,
+    context: Optional[Context] = None,
+) -> dict[str, Any]:
+    """Run PCA → neighbors → UMAP → clustering → marker genes as a pipeline.
+
+    This tool exists for clients that need a single chained call with optional
+    asynchronous execution semantics to survive long-running jobs.
+    """
+    ctx = ToolContext(_data_manager=data_manager, _mcp_context=context)
+
+    async def _execute_pipeline() -> dict[str, Any]:
+        await ctx.info("Starting pipeline: embeddings + marker genes")
+
+        embedding_params = EmbeddingParameters(
+            compute_pca=True,
+            compute_neighbors=True,
+            compute_umap=True,
+            compute_clustering=True,
+            clustering_method="leiden",
+            clustering_key=cluster_key,
+            n_neighbors=10 if fast_mode else 15,
+            n_pcs=20 if fast_mode else 30,
+            clustering_resolution=0.8 if fast_mode else 1.0,
+            umap_min_dist=0.5,
+            compute_spatial_neighbors=True,
+        )
+        embedding_result = await compute_embeddings(
+            data_id=data_id,
+            params=embedding_params,
+            context=context,
+        )
+
+        de_params = DifferentialExpressionParameters(
+            group_key=cluster_key,
+            method="wilcoxon",
+            n_top_genes=n_top_genes,
+        )
+        marker_result = await find_markers(data_id=data_id, params=de_params, context=context)
+
+        viz_result = await visualize_data(
+            data_id=data_id,
+            params=VisualizationParameters(
+                plot_type="feature",
+                basis="umap",
+                feature=cluster_key,
+                output_format="png",
+            ),
+            context=context,
+        )
+
+        plot_path = _extract_visualization_path(viz_result)
+        image_uri, mime_type = _encode_image_to_data_uri(plot_path)
+
+        return {
+            "data_id": data_id,
+            "cluster_key": cluster_key,
+            "embedding_result": embedding_result,
+            "markers": marker_result.model_dump(),
+            "umap_plot_path": plot_path,
+            "structuredContent": {
+                "status": "completed",
+                "data_id": data_id,
+                "cluster_key": cluster_key,
+                "umap_plot_path": plot_path,
+            },
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        "Pipeline completata: PCA → UMAP → clustering → marker genes. "
+                        f"Cluster key: {cluster_key}."
+                    ),
+                }
+            ],
+            "_meta": {
+                "openai/outputTemplate": "ui://chatspatial/widgets/spatial-pipeline.html",
+                "openai/widgetAccessible": True,
+                "openai/widgetDescription": "Summary and UMAP preview for completed spatial pipeline.",
+                "openai/widgetCSP": {
+                    "connect_domains": [],
+                    "resource_domains": ["https://persistent.oaistatic.com"],
+                },
+                "chatspatial/widget": {
+                    "type": "spatial_pipeline",
+                    "image": {
+                        "mime_type": mime_type,
+                        "data_uri": image_uri,
+                    },
+                },
+            },
+        }
+
+    if not async_mode:
+        return await _execute_pipeline()
+
+    job_id = f"pipeline_{len(_PIPELINE_JOBS) + 1}"
+    _PIPELINE_JOBS[job_id] = PipelineJob(job_id=job_id, data_id=data_id)
+
+    async def _runner() -> None:
+        try:
+            result = await _execute_pipeline()
+            _PIPELINE_JOBS[job_id].status = "completed"
+            _PIPELINE_JOBS[job_id].result = result
+        except Exception as exc:
+            _PIPELINE_JOBS[job_id].status = "failed"
+            _PIPELINE_JOBS[job_id].error = str(exc)
+
+    asyncio.create_task(_runner())
+    return {
+        "job_id": job_id,
+        "status": "running",
+        "message": "Pipeline started. Poll with get_pipeline_status(job_id).",
+    }
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    )
+)
+@mcp_tool_error_handler()
+async def get_pipeline_status(job_id: str) -> dict[str, Any]:
+    """Get status and result of an asynchronous run_spatial_pipeline job."""
+    job = _PIPELINE_JOBS.get(job_id)
+    if not job:
+        raise ParameterError(f"Unknown job_id: {job_id}")
+
+    response: dict[str, Any] = {
+        "job_id": job.job_id,
+        "data_id": job.data_id,
+        "status": job.status,
+    }
+    if job.status == "completed" and job.result is not None:
+        response["result"] = job.result
+    if job.status == "failed" and job.error:
+        response["error"] = job.error
+    return response
 
 
 @mcp.tool(
