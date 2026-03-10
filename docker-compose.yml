@@ -1,0 +1,16 @@
+services:
+  chatspatial-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: chatspatial-mcp
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      CHATSPATIAL_TRANSPORT: "streamable-http"
+      CHATSPATIAL_HOST: "0.0.0.0"
+      CHATSPATIAL_LOG_LEVEL: "INFO"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped

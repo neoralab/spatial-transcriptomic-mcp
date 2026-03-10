@@ -21,4 +21,4 @@ RUN pip install --no-cache-dir --upgrade pip uv \
 EXPOSE 8080
 
 # Cloud Run requires binding to 0.0.0.0:$PORT
-CMD ["sh", "-c", "python -m chatspatial server --cloud-run --log-level INFO"]
+CMD ["sh", "-c", "python -m chatspatial server --transport ${CHATSPATIAL_TRANSPORT:-streamable-http} --host ${CHATSPATIAL_HOST:-0.0.0.0} --port ${PORT:-8080} --log-level ${CHATSPATIAL_LOG_LEVEL:-INFO}"]
