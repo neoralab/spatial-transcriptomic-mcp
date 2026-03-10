@@ -123,6 +123,29 @@ cd STAGATE_pyG && python setup.py install
 
 ---
 
+
+## Docker + Cloudflared (remote MCP endpoint)
+
+Use this when you want local Docker hosting but external apps to connect through a Cloudflare tunnel.
+
+```bash
+# Build and run the MCP server container
+docker compose up --build -d
+
+# Verify MCP HTTP endpoint is reachable locally
+curl -i http://localhost:8080/
+
+# Expose it publicly via Cloudflare Tunnel
+cloudflared tunnel --url http://localhost:8080
+```
+
+Notes:
+- The container listens on `0.0.0.0:8080` and is mapped to host `localhost:8080`.
+- `docker-compose.yml` includes `host.docker.internal:host-gateway`, so code in the container can reach services running on your host machine using `http://host.docker.internal:<port>`.
+- Keep `cloudflared` running while external MCP clients are connected.
+
+---
+
 ## Help
 
 - [Configuration Guide](docs/advanced/configuration.md) — MCP client setup
