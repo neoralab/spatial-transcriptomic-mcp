@@ -11,6 +11,7 @@ import traceback
 from typing import Literal, cast
 
 import click
+from mcp.server.transport_security import TransportSecuritySettings
 
 # Initialize runtime configuration (SSOT - all config in one place)
 # This import triggers init_runtime() which configures:
@@ -94,6 +95,20 @@ def server(
         mcp.settings.log_level = cast(
             Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], log_level
         )
+
+        # When binding to 0.0.0.0 or a non-localhost address (e.g. behind a
+        # reverse proxy / Cloudflare Tunnel), the FastMCP constructor has
+        # already set transport_security with DNS-rebinding protection locked
+        # to localhost-only allowed_hosts because the default host is
+        # "127.0.0.1".  Updating mcp.settings.host above does NOT retroactively
+        # change that security policy, so requests arriving with the cloudflared
+        # domain in the Host header are rejected with "Invalid Host header".
+        # Fix: disable DNS rebinding protection for non-localhost deployments.
+        _localhost_hosts = ("127.0.0.1", "localhost", "::1")
+        if host not in _localhost_hosts:
+            mcp.settings.transport_security = TransportSecuritySettings(
+                enable_dns_rebinding_protection=False
+            )
 
         # Run the server with the specified transport
         mcp.run(transport=cast(Literal["stdio", "sse", "streamable-http"], transport))

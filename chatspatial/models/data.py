@@ -32,7 +32,9 @@ class ColumnInfo(BaseModel):
     dtype: Literal["categorical", "numerical"]
     n_unique: int
     sample_values: Optional[list[str]] = None  # Sample values for categorical
-    range: Optional[tuple[float, float]] = None  # Value range for numerical
+    range: Optional[Annotated[list[float], Field(min_length=2, max_length=2)]] = Field(
+        None, description="[min, max] value range for numerical columns."
+    )  # Value range for numerical
 
 
 class SpatialDataset(BaseModel):
@@ -383,8 +385,8 @@ class VisualizationParameters(BaseModel):
     )
 
     # Multi-gene visualization parameters
-    panel_layout: Optional[tuple[int, int]] = (
-        None  # (rows, cols) - auto-determined if None
+    panel_layout: Optional[Annotated[list[int], Field(min_length=2, max_length=2)]] = Field(
+        None, description="[rows, cols] panel layout for multi-gene plots. Auto-determined if None."
     )
 
     # GridSpec subplot spacing parameters (for multi-panel plots)
@@ -414,7 +416,9 @@ class VisualizationParameters(BaseModel):
     )
 
     # Ligand-receptor pair parameters
-    lr_pairs: Optional[list[tuple[str, str]]] = None  # List of (ligand, receptor) pairs
+    lr_pairs: Optional[list[Annotated[list[str], Field(min_length=2, max_length=2)]]] = Field(
+        None, description="List of [ligand, receptor] pairs to highlight."
+    )
     lr_database: str = "cellchat"  # Database for LR pairs
     plot_top_pairs: int = Field(
         6,
@@ -428,8 +432,8 @@ class VisualizationParameters(BaseModel):
     show_correlation_stats: bool = True
 
     # Figure parameters
-    figure_size: Optional[tuple[int, int]] = (
-        None  # (width, height) - auto-determined if None
+    figure_size: Optional[Annotated[list[int], Field(min_length=2, max_length=2)]] = Field(
+        None, description="[width, height] in inches. Auto-determined if None."
     )
     dpi: int = 300  # Publication quality (Nature/Cell standard)
     alpha: float = 0.9  # Spot transparency (higher = more opaque)
@@ -904,8 +908,8 @@ class SpatialStatisticsParameters(BaseModel):
     )
 
     # Bivariate Moran's I specific parameters
-    gene_pairs: Optional[list[tuple[str, str]]] = Field(
-        None, description="Gene pairs for bivariate analysis"
+    gene_pairs: Optional[list[Annotated[list[str], Field(min_length=2, max_length=2)]]] = Field(
+        None, description="Gene pairs for bivariate analysis, e.g. [['GeneA', 'GeneB']]"
     )
 
 
@@ -975,7 +979,10 @@ class TrajectoryParameters(BaseModel):
     )
 
     # CellRank specific parameters
-    cellrank_kernel_weights: tuple[float, float] = (0.8, 0.2)
+    cellrank_kernel_weights: Annotated[list[float], Field(min_length=2, max_length=2)] = Field(
+        default=[0.8, 0.2],
+        description="[velocity_weight, expression_weight] for CellRank kernel combination.",
+    )
     cellrank_n_states: int = Field(
         default=5, gt=0, le=20, description="Number of macrostates for CellRank."
     )
@@ -1004,7 +1011,7 @@ class TrajectoryParameters(BaseModel):
             )
         # Normalize to sum to 1 if they don't already
         if abs(total - 1.0) > 1e-6:
-            self.cellrank_kernel_weights = (vk / total, ck / total)
+            self.cellrank_kernel_weights = [vk / total, ck / total]
         return self
 
     # Fallback control
@@ -1869,9 +1876,9 @@ class RegistrationParameters(BaseModel):
     )
 
     # STalign-specific parameters
-    stalign_image_size: tuple[int, int] = Field(
-        (128, 128),
-        description="Image size for STalign rasterization (height, width).",
+    stalign_image_size: Annotated[list[int], Field(min_length=2, max_length=2)] = Field(
+        default=[128, 128],
+        description="[height, width] image size for STalign rasterization.",
     )
     stalign_niter: Annotated[int, Field(gt=0, le=500)] = Field(
         50,

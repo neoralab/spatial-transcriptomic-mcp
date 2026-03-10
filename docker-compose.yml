@@ -11,6 +11,17 @@ services:
       CHATSPATIAL_TRANSPORT: "streamable-http"
       CHATSPATIAL_HOST: "0.0.0.0"
       CHATSPATIAL_LOG_LEVEL: "INFO"
+      # Directory inside the container where uploaded files are stored.
+      # This path is bind-mounted from ./data on the host (see volumes below).
+      CHATSPATIAL_DATA_DIR: "/data"
+      # Maximum upload size in MB for the upload_data tool (default 500 MB).
+      CHATSPATIAL_MAX_UPLOAD_MB: "500"
+    volumes:
+      # Bind-mount a local ./data directory into the container so that:
+      # 1. Files uploaded via the upload_data MCP tool are persisted on the host.
+      # 2. You can also drop files directly into ./data on the host and reference
+      #    them as /data/<filename> in load_data() without uploading.
+      - ./data:/data
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
