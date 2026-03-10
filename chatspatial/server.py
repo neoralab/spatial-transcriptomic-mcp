@@ -189,6 +189,89 @@ def _resolve_params(params: Optional[P], default_factory: type[P]) -> P:
 
 _UPLOAD_DIR = Path(os.environ.get("CHATSPATIAL_DATA_DIR", "/data"))
 _MAX_UPLOAD_BYTES = int(os.environ.get("CHATSPATIAL_MAX_UPLOAD_MB", "500")) * 1024 * 1024
+_WIDGET_RESOURCE_DOMAIN = "https://persistent.oaistatic.com"
+
+
+def _widget_html(title: str, heading: str, payload_var: str) -> str:
+    """Generate minimal CSP-safe widget HTML for OpenAI Apps embedding."""
+    return f"""<!doctype html>
+<html lang=\"en\">
+  <head>
+    <meta charset=\"utf-8\" />
+    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+    <title>{title}</title>
+    <style>
+      body {{ font-family: Inter, system-ui, -apple-system, sans-serif; margin: 0; padding: 12px; }}
+      .card {{ border: 1px solid #e5e7eb; border-radius: 12px; padding: 12px; }}
+      h3 {{ margin: 0 0 8px; font-size: 14px; }}
+      pre {{ margin: 0; white-space: pre-wrap; font-size: 12px; line-height: 1.4; }}
+      .muted {{ color: #6b7280; font-size: 12px; margin-top: 8px; }}
+    </style>
+  </head>
+  <body>
+    <div class=\"card\">
+      <h3>{heading}</h3>
+      <pre id=\"payload\">Waiting for tool data…</pre>
+      <div class=\"muted\">Rendered from MCP widget template.</div>
+    </div>
+    <script>
+      const data = window.openai?.toolOutput?._meta?.chatspatial?.widget?.{payload_var};
+      const el = document.getElementById("payload");
+      el.textContent = data ? JSON.stringify(data, null, 2) : "No widget payload found.";
+    </script>
+  </body>
+</html>
+"""
+
+
+@mcp.custom_route("/widgets/spatial-pipeline.html", methods=["GET"])
+async def widget_spatial_pipeline(request: Request) -> JSONResponse:
+    """Serve OpenAI Apps widget template for spatial pipeline summaries."""
+    return JSONResponse(
+        {
+            "uri": "ui://chatspatial/widgets/spatial-pipeline.html",
+            "mimeType": "text/html",
+            "text": _widget_html(
+                title="ChatSpatial Pipeline Widget",
+                heading="Spatial Pipeline Result",
+                payload_var="pipeline",
+            ),
+            "_meta": {
+                "openai/widgetDescription": (
+                    "Interactive summary for the ChatSpatial pipeline run including preview metadata."
+                ),
+                "openai/widgetPrefersBorder": True,
+                "openai/widgetCSP": {
+                    "connect_domains": [],
+                    "resource_domains": [_WIDGET_RESOURCE_DOMAIN],
+                },
+            },
+        }
+    )
+
+
+@mcp.custom_route("/widgets/pipeline-status.html", methods=["GET"])
+async def widget_pipeline_status(request: Request) -> JSONResponse:
+    """Serve OpenAI Apps widget template for async pipeline status."""
+    return JSONResponse(
+        {
+            "uri": "ui://chatspatial/widgets/pipeline-status.html",
+            "mimeType": "text/html",
+            "text": _widget_html(
+                title="ChatSpatial Pipeline Status Widget",
+                heading="Pipeline Job Status",
+                payload_var="pipeline_status",
+            ),
+            "_meta": {
+                "openai/widgetDescription": "Live-like status card for asynchronous pipeline jobs.",
+                "openai/widgetPrefersBorder": True,
+                "openai/widgetCSP": {
+                    "connect_domains": [],
+                    "resource_domains": [_WIDGET_RESOURCE_DOMAIN],
+                },
+            },
+        }
+    )
 
 
 @dataclass
@@ -640,16 +723,22 @@ async def run_spatial_pipeline(
                 "openai/outputTemplate": "ui://chatspatial/widgets/spatial-pipeline.html",
                 "openai/widgetAccessible": True,
                 "openai/widgetDescription": "Summary and UMAP preview for completed spatial pipeline.",
+                "openai/widgetPrefersBorder": True,
                 "openai/widgetCSP": {
                     "connect_domains": [],
-                    "resource_domains": ["https://persistent.oaistatic.com"],
+                    "resource_domains": [_WIDGET_RESOURCE_DOMAIN],
                 },
                 "chatspatial/widget": {
-                    "type": "spatial_pipeline",
-                    "image": {
-                        "mime_type": mime_type,
-                        "data_uri": image_uri,
-                    },
+                    "pipeline": {
+                        "type": "spatial_pipeline",
+                        "data_id": data_id,
+                        "cluster_key": cluster_key,
+                        "umap_plot_path": plot_path,
+                        "image": {
+                            "mime_type": mime_type,
+                            "data_uri": image_uri,
+                        },
+                    }
                 },
             },
         }
@@ -700,6 +789,25 @@ async def get_pipeline_status(job_id: str) -> dict[str, Any]:
         response["result"] = job.result
     if job.status == "failed" and job.error:
         response["error"] = job.error
+
+    response["_meta"] = {
+        "openai/outputTemplate": "ui://chatspatial/widgets/pipeline-status.html",
+        "openai/widgetAccessible": True,
+        "openai/widgetDescription": "Status widget for asynchronous pipeline execution.",
+        "openai/widgetPrefersBorder": True,
+        "openai/widgetCSP": {
+            "connect_domains": [],
+            "resource_domains": [_WIDGET_RESOURCE_DOMAIN],
+        },
+        "chatspatial/widget": {
+            "pipeline_status": {
+                "job_id": job.job_id,
+                "status": job.status,
+                "data_id": job.data_id,
+                "error": job.error,
+            }
+        },
+    }
     return response
 
 
