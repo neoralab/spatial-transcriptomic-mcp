@@ -76,6 +76,55 @@ def test_server_command_failure_path_returns_exit_code_one(monkeypatch):
     assert "Error starting MCP server: run failed" in result.output
 
 
+def test_server_command_accepts_streamable_http_transport(monkeypatch):
+    calls: dict[str, object] = {}
+
+    def _fake_run(*, transport: str):
+        calls["transport"] = transport
+
+    fake_mcp = SimpleNamespace(
+        settings=SimpleNamespace(host=None, port=None, log_level=None),
+        run=_fake_run,
+    )
+    monkeypatch.setattr(main_mod, "mcp", fake_mcp)
+    monkeypatch.setattr(main_mod.config, "init_runtime", lambda **_kwargs: None)
+
+    result = CliRunner().invoke(
+        main_mod.cli,
+        ["server", "--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8080"],
+    )
+
+    assert result.exit_code == 0
+    assert fake_mcp.settings.host == "0.0.0.0"
+    assert fake_mcp.settings.port == 8080
+    assert calls["transport"] == "streamable-http"
+
+
+def test_server_command_cloud_run_overrides_transport_host_and_port(monkeypatch):
+    calls: dict[str, object] = {}
+
+    def _fake_run(*, transport: str):
+        calls["transport"] = transport
+
+    fake_mcp = SimpleNamespace(
+        settings=SimpleNamespace(host=None, port=None, log_level=None),
+        run=_fake_run,
+    )
+    monkeypatch.setattr(main_mod, "mcp", fake_mcp)
+    monkeypatch.setattr(main_mod.config, "init_runtime", lambda **_kwargs: None)
+    monkeypatch.setenv("PORT", "8787")
+
+    result = CliRunner().invoke(
+        main_mod.cli,
+        ["server", "--cloud-run", "--transport", "stdio", "--host", "127.0.0.1", "--port", "9000"],
+    )
+
+    assert result.exit_code == 0
+    assert fake_mcp.settings.host == "0.0.0.0"
+    assert fake_mcp.settings.port == 8787
+    assert calls["transport"] == "streamable-http"
+
+
 def test_main_delegates_to_click_group(monkeypatch):
     called = {"value": False}
 

@@ -126,5 +126,6 @@ cd STAGATE_pyG && python setup.py install
 ## Help
 
 - [Configuration Guide](docs/advanced/configuration.md) — MCP client setup
+- [Cloud Run Deployment](docs/advanced/cloud-run.md) — Run ChatSpatial as remote MCP over HTTPS
 - [Troubleshooting](docs/advanced/troubleshooting.md) — Common issues
 - [GitHub Issues](https://github.com/cafferychen777/ChatSpatial/issues)

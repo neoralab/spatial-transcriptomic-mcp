@@ -80,6 +80,8 @@ claude mcp add chatspatial /path/to/venv/bin/python -- -m chatspatial server
 
 See [Installation Guide](INSTALLATION.md) for detailed setup including virtual environments and all MCP clients.
 
+Need remote/shared deployment? Use [Cloud Run Deployment Guide](docs/advanced/cloud-run.md) to run ChatSpatial as an HTTPS MCP endpoint.
+
 ---
 
 ## Use
