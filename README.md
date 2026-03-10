@@ -100,6 +100,14 @@ Find spatially variable genes and create a heatmap
 
 ---
 
+## MCP Integration Notes (OpenAI Apps / SSE)
+
+ChatSpatial supports chained MCP calls over both `sse` and `streamable-http` transports, including long-running workflows.
+
+- Use `run_spatial_pipeline()` to execute PCA → UMAP → clustering → marker genes in one call.
+- Set `async_mode=true` for non-blocking execution and poll with `get_pipeline_status(job_id)`.
+- Pipeline responses include OpenAI App widget metadata (`_meta.openai/*`) and a preview image payload for UI rendering.
+
 ## Capabilities
 
 | Category | Methods |
